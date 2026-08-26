@@ -1,0 +1,10 @@
+.env
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+.pytest_cache/
+tsconfig.tsbuildinfo

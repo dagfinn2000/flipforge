@@ -1,0 +1,60 @@
+name: flipforge
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-flipforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flipforge}
+      POSTGRES_DB: ${POSTGRES_DB:-flipforge}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flipforge} -d ${POSTGRES_DB:-flipforge}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    # Not published by default; the API reaches it over the compose network.
+    # Uncomment to inspect the database from your host.
+    # ports:
+    #   - "5432:5432"
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      FF_DATABASE_URL: postgresql://${POSTGRES_USER:-flipforge}:${POSTGRES_PASSWORD:-flipforge}@db:5432/${POSTGRES_DB:-flipforge}
+      # Identify yourself to the OSRS Wiki API. Set FF_CONTACT in .env.
+      FF_CONTACT: ${FF_CONTACT:-unset}
+      FF_POLL_LATEST_SECONDS: ${FF_POLL_LATEST_SECONDS:-45}
+      FF_METRICS_INTERVAL_SECONDS: ${FF_METRICS_INTERVAL_SECONDS:-60}
+      FF_BACKFILL_ON_START: ${FF_BACKFILL_ON_START:-true}
+      FF_BACKFILL_1H_STEPS: ${FF_BACKFILL_1H_STEPS:-336}
+      FF_BACKFILL_5M_STEPS: ${FF_BACKFILL_5M_STEPS:-288}
+      FF_GE_TAX_RATE: ${FF_GE_TAX_RATE:-0.02}
+      FF_GE_TAX_CAP: ${FF_GE_TAX_CAP:-5000000}
+      FF_GE_TAX_MIN_PRICE: ${FF_GE_TAX_MIN_PRICE:-100}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=5).status==200 else 1)\""]
+      interval: 15s
+      timeout: 8s
+      retries: 10
+      start_period: 40s
+    # Uncomment to call the API directly from your host or your own scripts.
+    # ports:
+    #   - "8000:8000"
+
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${FF_PORT:-8090}:80"
+
+volumes:
+  pgdata:
