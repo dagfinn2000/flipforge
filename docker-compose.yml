@@ -1,4 +1,29 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  FlipForge
+#
+#  Configuration comes from a file called `.env` sitting right here, next to
+#  this file, in the root of the repository. It does not exist until you make
+#  it, and nothing will start without it:
+#
+#      cp .env.example .env      # then set FF_CONTACT
+#      docker compose up -d
+#
+#  Then open http://localhost:8090 (or whatever FF_PORT you set).
+#
+#  Every service below reads that same file, and .env.example documents every
+#  setting in it. You do not need to edit this compose file to configure
+#  anything.
+# ─────────────────────────────────────────────────────────────────────────────
+
 name: flipforge
+
+# Loaded by every service. The path is relative to this file, so `.env` means
+# the repository root. If you keep your config somewhere else, point this at it
+# once and all three services follow.
+x-env: &env-file
+  env_file:
+    - path: .env
+      required: false
 
 services:
   db:
@@ -10,6 +35,7 @@ services:
     # initialisation, so a data directory created by plain postgres would load
     # the image but not the extension. Setting it here works either way.
     command: postgres -c shared_preload_libraries=timescaledb
+    <<: *env-file
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-flipforge}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flipforge}
@@ -32,19 +58,17 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # Pass the whole .env through, so every setting documented in .env.example
+    # The whole .env goes through, so every setting documented in .env.example
     # actually reaches the app. Listing variables individually here silently
     # drops any that were forgotten.
-    env_file:
-      - path: .env
-        required: false
+    <<: *env-file
     environment:
       # Built from the POSTGRES_* values; the database is reachable as `db`
       # inside the compose network, so this always overrides any .env value.
       FF_DATABASE_URL: postgresql://${POSTGRES_USER:-flipforge}:${POSTGRES_PASSWORD:-flipforge}@db:5432/${POSTGRES_DB:-flipforge}
       # Required. The wiki rejects requests without a descriptive User-Agent,
       # and the API refuses to boot without one rather than failing obscurely.
-      FF_CONTACT: ${FF_CONTACT:?set FF_CONTACT in .env to your email or Discord handle}
+      FF_CONTACT: ${FF_CONTACT:?missing. Run "cp .env.example .env" in this directory, then set FF_CONTACT to your email or Discord handle}
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=5).status==200 else 1)\""]
       interval: 15s
@@ -58,9 +82,11 @@ services:
   web:
     build: ./frontend
     restart: unless-stopped
+    <<: *env-file
     depends_on:
       - api
     ports:
+      # Set FF_PORT in .env to serve the UI somewhere other than 8090.
       - "${FF_PORT:-8090}:80"
 
 volumes:

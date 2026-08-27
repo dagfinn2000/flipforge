@@ -6,11 +6,17 @@ decides whether a flip is worth doing.
 
 ```bash
 git clone https://github.com/dagfinn2000/flipforge.git && cd flipforge
-cp .env.example .env          # set FF_CONTACT — the app will not start without it
+cp .env.example .env          # then open it and set FF_CONTACT
 docker compose up -d
 ```
 
 Open <http://localhost:8090>. No cloud services, no API keys, no accounts.
+
+All configuration lives in **`.env` in the repository root, next to
+`docker-compose.yml`**. It is not in the repo — you create it by copying
+`.env.example`, which documents every setting. All three services read that one
+file, so you never need to edit the compose file to configure anything. If it is
+missing, compose stops and tells you exactly what to run.
 
 ---
 
