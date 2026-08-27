@@ -22,7 +22,7 @@ export default function Watchlist() {
       <div className="card">
         <ItemTable
           rows={data?.results ?? []}
-          columns={["score", "buy", "sell", "margin", "breakeven", "roi", "vol24", "change24h", "steadiness", "age"]}
+          columns={["score", "month", "buy", "sell", "margin", "breakeven", "roi", "vol24", "change24h", "age"]}
           emptyTitle={isLoading ? "Loading..." : "Your watchlist is empty"}
           emptyBody="Open any item and press Watch, or hit ⌘K to search."
           action={(row) => (

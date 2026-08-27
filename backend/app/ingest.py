@@ -22,6 +22,11 @@ log = logging.getLogger("flipforge.ingest")
 # permissive: real illiquid spreads run 10-30%, not 1000%.
 SPREAD_GUARD = 3.0
 
+# Grading is reachable from the validation tick, the grading loop and the
+# first-boot seed. They are harmless together thanks to ON CONFLICT, but they
+# would each redo the other's work, so only one pass runs at a time.
+_grading_lock = asyncio.Lock()
+
 # Horizons the score validation harness grades against. asyncpg maps an
 # interval parameter from timedelta, not from a string.
 HORIZONS = {
@@ -620,7 +625,7 @@ SELECT s.item_id, s.ts, $1::text, e.avg_high::bigint,
          LIMIT 1
   ) e ON TRUE
  WHERE s.ts <= now() - $2::interval
-   AND s.ts >= now() - INTERVAL '30 days'
+   AND s.ts >= $3::timestamptz AND s.ts < $4::timestamptz
    AND s.buy > 0
    AND NOT EXISTS (
         SELECT 1 FROM score_outcomes o
@@ -629,18 +634,40 @@ ON CONFLICT (item_id, ts, horizon) DO NOTHING
 """
 
 
-async def grade_outcomes() -> int:
+async def grade_outcomes(window_days: Optional[int] = None) -> int:
     """Score every matured snapshot against what the market actually did.
 
     The exit price is the item's average instant-buy price one horizon later, so
     "realised margin" is what a flip entered at snapshot time and exited on
     schedule would genuinely have banked after tax.
+
+    Graded in day-sized slices. A single statement covering a month of snapshots
+    runs for minutes and gets cut off by any sane timeout, writing nothing; a
+    slice that finishes leaves its work behind even if a later one fails.
     """
+    if _grading_lock.locked():
+        log.debug("grading already in progress, skipping this pass")
+        return 0
+
+    async with _grading_lock:
+        return await _grade(window_days)
+
+
+async def _grade(window_days: Optional[int]) -> int:
+    days = window_days or settings.retain_outcomes_days
+    now = datetime.now(timezone.utc)
     total = 0
     for horizon, interval in HORIZONS.items():
-        result = await db.execute(GRADE_SQL, horizon, interval)
-        if result.startswith("INSERT"):
-            total += int(result.split()[-1])
+        for day in range(days + 1):
+            start = now - timedelta(days=day + 1)
+            end = now - timedelta(days=day)
+            try:
+                result = await db.run_long(GRADE_SQL, horizon, interval, start, end)
+            except Exception as exc:  # noqa: BLE001 - one slice must not stop the rest
+                log.warning("grading %s on %s failed: %s", horizon, end.date(), exc)
+                continue
+            if isinstance(result, str) and result.startswith("INSERT"):
+                total += int(result.split()[-1])
     if total:
         log.info("graded %s score outcomes", total)
     return total
@@ -742,6 +769,83 @@ async def reconstruct_snapshots(hours: int = 96) -> int:
     await db.set_meta("snapshots_reconstructed", "1")
     log.info("snapshot reconstruction complete: %s rows", total)
     return total
+
+
+TRACK_SQL = """
+WITH graded AS (
+    SELECT s.item_id, o.realised_margin, o.realised_cycle_profit
+      FROM score_snapshots s
+      JOIN score_outcomes o ON o.item_id = s.item_id AND o.ts = s.ts
+     WHERE o.horizon = $1
+       AND s.ts > now() - ($2 || ' days')::interval
+       AND o.realised_margin IS NOT NULL
+)
+SELECT item_id,
+       count(*)                                                   AS samples,
+       avg(CASE WHEN realised_margin > 0 THEN 1.0 ELSE 0.0 END)::double precision
+                                                                  AS win_rate,
+       percentile_cont(0.5) WITHIN GROUP (ORDER BY realised_margin)::bigint
+                                                                  AS median_margin,
+       percentile_cont(0.5) WITHIN GROUP (ORDER BY realised_cycle_profit)::bigint
+                                                                  AS median_cycle_profit,
+       avg(realised_cycle_profit)::bigint                         AS mean_cycle_profit,
+       sum(realised_cycle_profit)::bigint                         AS total_cycle_profit
+  FROM graded
+ GROUP BY item_id
+"""
+
+UPSERT_TRACK = """
+INSERT INTO item_track_record (
+    item_id, horizon, window_days, samples, win_rate, median_margin,
+    median_cycle_profit, mean_cycle_profit, total_cycle_profit,
+    track_score, track_components, updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
+ON CONFLICT (item_id) DO UPDATE SET
+    horizon=EXCLUDED.horizon, window_days=EXCLUDED.window_days,
+    samples=EXCLUDED.samples, win_rate=EXCLUDED.win_rate,
+    median_margin=EXCLUDED.median_margin,
+    median_cycle_profit=EXCLUDED.median_cycle_profit,
+    mean_cycle_profit=EXCLUDED.mean_cycle_profit,
+    total_cycle_profit=EXCLUDED.total_cycle_profit,
+    track_score=EXCLUDED.track_score, track_components=EXCLUDED.track_components,
+    updated_at=now()
+"""
+
+
+async def compute_track_records() -> int:
+    """Rebuild each item's trailing-month profitability from graded outcomes.
+
+    This is the measured counterpart to the flip score: not how good the current
+    quote looks, but how flips on this item have actually turned out.
+    """
+    days, horizon = settings.track_record_days, settings.track_record_horizon
+    # Month-wide aggregate over millions of rows: needs the untimed connection.
+    rows = await db.run_long(TRACK_SQL, horizon, str(days), fetch_rows=True)
+    payload = []
+    for r in rows:
+        samples = _int(r["samples"])
+        win_rate = _float(r["win_rate"])
+        median_cycle = _int(r["median_cycle_profit"])
+        score = scoring.track_score(
+            samples=samples, win_rate=win_rate, median_cycle_profit=median_cycle
+        )
+        payload.append((
+            r["item_id"], horizon, days, samples,
+            _as_numeric(win_rate), _int(r["median_margin"]), median_cycle,
+            _int(r["mean_cycle_profit"]), _int(r["total_cycle_profit"]),
+            _as_numeric(score.total), json.dumps(score.as_dict()),
+        ))
+
+    await db.executemany(UPSERT_TRACK, payload)
+    # Items with no graded flips left in the window should not keep a stale
+    # score from a month ago.
+    await db.execute(
+        """DELETE FROM item_track_record
+            WHERE updated_at < now() - INTERVAL '1 hour'"""
+    )
+    await db.set_meta("last_track_records", str(int(time.time())))
+    log.info("track records rebuilt for %s items", len(payload))
+    return len(payload)
 
 
 # ------------------------------------------------------------------ alerts ---
@@ -857,6 +961,7 @@ async def _metrics_tick() -> None:
 async def _validation_tick() -> None:
     await snapshot_scores()
     await grade_outcomes()
+    await compute_track_records()
 
 
 async def _maintenance_tick() -> None:
@@ -919,5 +1024,6 @@ async def _seed_validation() -> None:
     try:
         await reconstruct_snapshots(settings.reconstruct_snapshots_hours)
         await grade_outcomes()
+        await compute_track_records()
     except Exception as exc:  # noqa: BLE001
         log.warning("snapshot reconstruction failed: %s", exc)

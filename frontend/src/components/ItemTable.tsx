@@ -6,7 +6,7 @@ import { clsx, duration, gp, gpShort, num, pct, tone } from "../lib/format";
 export type ColumnKey =
   | "score" | "buy" | "sell" | "margin" | "roi" | "profit" | "vol24" | "vol1h"
   | "change1h" | "change24h" | "change7d" | "limit" | "rsi" | "fill" | "steadiness"
-  | "breakeven" | "volatility" | "signal" | "age" | "affordable";
+  | "breakeven" | "volatility" | "signal" | "age" | "affordable" | "month";
 
 interface Column {
   key: ColumnKey;
@@ -28,6 +28,28 @@ export const COLUMNS: Record<ColumnKey, Column> = {
         {r.flip_score ? r.flip_score.toFixed(0) : "--"}
       </span>
     ),
+  },
+  month: {
+    key: "month", label: "Month", sortKey: "track",
+    title: "Trailing-month realised profitability: how flips on this item actually "
+      + "turned out, not how the current quote looks. Discounted when there is "
+      + "little evidence.",
+    render: (r) => {
+      const score = r.track_score;
+      if (score === null || score === undefined) {
+        return <span className="flat mono" title="no graded flips yet">--</span>;
+      }
+      const detail = [
+        `${((r.track_win_rate ?? 0) * 100).toFixed(0)}% of flips ended profitable`,
+        `median ${gpShort(r.track_median_profit)} gp per cycle`,
+        `${num(r.track_samples)} graded flips`,
+      ].join(" · ");
+      return (
+        <span className={clsx("score-pill", scoreClass(score))} title={detail}>
+          {score.toFixed(0)}
+        </span>
+      );
+    },
   },
   buy: {
     key: "buy", label: "Buy at", title: "Instant-sell price: what you can likely buy for",

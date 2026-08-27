@@ -198,6 +198,27 @@ SELECT create_hypertable(
 );
 CREATE INDEX IF NOT EXISTS score_outcomes_ts ON score_outcomes (ts DESC);
 
+-- How each item's flips have actually performed over the trailing month,
+-- rebuilt from graded snapshots. Kept separate from `metrics` because it is
+-- derived from a slow-moving month of outcomes rather than the live quote, and
+-- recomputing a 30 day aggregate every minute would be wasteful.
+CREATE TABLE IF NOT EXISTS item_track_record (
+    item_id             INTEGER PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+    horizon             TEXT NOT NULL,
+    window_days         INTEGER NOT NULL,
+    samples             INTEGER NOT NULL,
+    win_rate            NUMERIC(6, 4),
+    median_margin       BIGINT,
+    median_cycle_profit BIGINT,
+    mean_cycle_profit   BIGINT,
+    total_cycle_profit  BIGINT,
+    track_score         NUMERIC(6, 2),
+    track_components    JSONB,
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS track_record_score
+    ON item_track_record (track_score DESC NULLS LAST);
+
 -- ------------------------------------------------------------------- user ----
 CREATE TABLE IF NOT EXISTS watchlist (
     item_id    INTEGER PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,

@@ -98,6 +98,23 @@ real trade. All weights and saturation bands are named constants at the top of
 changed in one place. Each item's per-component value, weight and contribution
 are stored and rendered on its page, so a ranking can always be audited.
 
+### Two scores, deliberately
+
+Every item carries two numbers, and they answer different questions.
+
+**Flip score** is forward looking: how good does this opportunity look *right
+now*, from the current quote, liquidity, steadiness and freshness.
+
+**Month score** is backward looking and measured: over the trailing 30 days, how
+did flips on this item *actually* turn out. It blends how often a flip ended
+profitable with how much it paid, then discounts the result by how much evidence
+exists — a 100% record over three flips is not a track record, and the score
+says so rather than flattering it.
+
+They are only loosely correlated (0.34 on live data), which is the point. An item
+can look excellent this second and have a poor month behind it; that is worth
+seeing before committing capital.
+
 And then the part most tools skip: **the score is graded.** Every hour the
 scoreboard is frozen. Once a holding period elapses, each frozen row is checked
 against what the market actually did — buy at the instant-sell price recorded
@@ -127,7 +144,7 @@ network fault.
 | `/1h` — hourly averages, every item | 15 min | 1 |
 | `/mapping` — item reference data | daily | 1 |
 | Rollup, scoring, alert evaluation | 60s | 0 (local SQL) |
-| Score snapshot and grading | hourly | 0 (local SQL) |
+| Score snapshot, grading, month scores | hourly | 0 (local SQL) |
 | Gap repair after downtime | hourly | 0 when healthy, up to 250 when catching up |
 
 **About 2 requests per minute at steady state, for the entire game.**

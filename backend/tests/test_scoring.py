@@ -143,3 +143,46 @@ class TestSilentMarkets:
             volume_24h=5000, margin_cv=0.3, est_fill_hours=1.0, quote_age_seconds=60,
         )
         assert s.total > 0
+
+
+class TestTrackScore:
+    """The measured counterpart: how flips actually turned out, not how they look."""
+
+    def _track(self, **kw):
+        base = dict(samples=60, win_rate=0.85, median_cycle_profit=500_000)
+        base.update(kw)
+        return scoring.track_score(**base)
+
+    def test_weights_sum_to_one(self):
+        assert sum(scoring.TRACK_WEIGHTS.values()) == pytest.approx(1.0)
+
+    def test_no_evidence_scores_zero(self):
+        s = scoring.track_score(samples=0, win_rate=None, median_cycle_profit=None)
+        assert s.total == 0.0
+        assert any("no graded flips" in n for n in s.notes)
+
+    def test_a_coin_flip_earns_nothing_on_the_win_term(self):
+        assert self._track(win_rate=0.5).component_value("win_rate") == 0.0
+        assert self._track(win_rate=0.3).component_value("win_rate") == 0.0
+
+    def test_thin_evidence_is_discounted_not_trusted(self):
+        """A perfect record over 3 flips must not outrank a strong one over 60."""
+        thin = self._track(samples=3, win_rate=1.0, median_cycle_profit=5_000_000)
+        solid = self._track(samples=60, win_rate=0.85, median_cycle_profit=500_000)
+        assert thin.confidence < solid.confidence
+        assert solid.total > thin.total
+        assert any("discounted" in n for n in thin.notes)
+
+    def test_losing_items_are_flagged(self):
+        s = self._track(win_rate=0.2, median_cycle_profit=-1000)
+        assert s.total == 0.0
+        assert any("lost more often" in n for n in s.notes)
+        assert any("flat or down" in n for n in s.notes)
+
+    def test_more_profit_scores_higher(self):
+        assert self._track(median_cycle_profit=5_000_000).total > \
+               self._track(median_cycle_profit=50_000).total
+
+    def test_bounded(self):
+        top = self._track(samples=10_000, win_rate=1.0, median_cycle_profit=10**10)
+        assert 0 <= top.total <= 100

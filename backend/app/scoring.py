@@ -208,3 +208,83 @@ def fillable_quantity(buy_limit: Optional[int], volume_24h: Optional[int]) -> in
     limit = buy_limit if buy_limit and buy_limit > 0 else int(volume / 24)
     flow_cap = int(volume / 6 * 0.25)   # a quarter of a 4h window's flow
     return max(0, min(limit, flow_cap))
+
+
+# ============================================================ track record ===
+# The flip score says how good an item looks right now. This says how its flips
+# have actually turned out over the past month, which is a different question
+# and the only one with evidence behind it.
+
+TRACK_WEIGHTS: dict[str, float] = {
+    "win_rate": 0.55,   # how often a flip ended profitable
+    "profit": 0.45,     # how much it paid when it did
+}
+
+# A coin flip is worth nothing, so the win-rate term only starts earning above
+# 50% and saturates at 90%.
+TRACK_WIN_FLOOR = 0.50
+TRACK_WIN_CEILING = 0.90
+# Same band as the forward-looking profit term, so the two are comparable.
+TRACK_PROFIT_BAND = PROFIT_BAND
+# Evidence discount: a 100% win rate over three samples is not a track record.
+TRACK_FULL_CONFIDENCE_SAMPLES = 30
+
+
+@dataclass
+class TrackScore:
+    total: float = 0.0
+    confidence: float = 0.0
+    components: list[Component] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    def component_value(self, key: str) -> float:
+        found = next((c for c in self.components if c.key == key), None)
+        return found.value if found else 0.0
+
+    def as_dict(self) -> dict:
+        return {
+            "total": self.total,
+            "confidence": self.confidence,
+            "components": [c.as_dict() for c in self.components],
+            "notes": self.notes,
+            "weights": TRACK_WEIGHTS,
+        }
+
+
+def track_score(
+    *,
+    samples: int,
+    win_rate: Optional[float],
+    median_cycle_profit: Optional[float],
+) -> TrackScore:
+    """Score an item on how its flips actually performed, not how they looked.
+
+    Confidence multiplies rather than adds: thin evidence discounts the whole
+    claim instead of counting as a separate virtue alongside it.
+    """
+    out = TrackScore()
+    if not samples or win_rate is None:
+        out.notes.append("no graded flips in the window")
+        return out
+
+    out.confidence = clip01(samples / TRACK_FULL_CONFIDENCE_SAMPLES)
+    win_component = linear_band(win_rate, TRACK_WIN_FLOOR, TRACK_WIN_CEILING)
+    profit_component = log_band(median_cycle_profit, TRACK_PROFIT_BAND)
+
+    out.components = [
+        Component("win_rate", win_component, TRACK_WEIGHTS["win_rate"], win_rate),
+        Component("profit", profit_component, TRACK_WEIGHTS["profit"], median_cycle_profit),
+    ]
+    raw = sum(c.contribution for c in out.components)
+    out.total = raw * out.confidence
+
+    if samples < TRACK_FULL_CONFIDENCE_SAMPLES:
+        out.notes.append(
+            f"only {samples} graded flips: score discounted to "
+            f"{out.confidence:.0%} confidence"
+        )
+    if win_rate < TRACK_WIN_FLOOR:
+        out.notes.append("flips on this item lost more often than they won")
+    if (median_cycle_profit or 0) <= 0:
+        out.notes.append("the typical flip here ended flat or down")
+    return out

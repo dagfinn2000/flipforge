@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     snapshot_interval_seconds: int = 3600     # score validation snapshots
     # Hours of history to rebuild snapshots for on first boot, so the score
     # validation page has data before the app has been running for a day.
-    reconstruct_snapshots_hours: int = 96
+    reconstruct_snapshots_hours: int = 720
     outcome_interval_seconds: int = 1800      # grade matured snapshots
 
     # --- Startup backfill -----------------------------------------------------
@@ -90,6 +90,12 @@ class Settings(BaseSettings):
     retain_snapshots_days: int = 60
     retain_outcomes_days: int = 30
     retain_alert_events_days: int = 90
+
+    # --- Track record ---------------------------------------------------------
+    # Trailing window and holding period used for the monthly profitability
+    # score shown beside every item.
+    track_record_days: int = 30
+    track_record_horizon: str = "4h"
 
     # --- Scanner defaults -----------------------------------------------------
     scanner_max_data_age_seconds: int = 3600

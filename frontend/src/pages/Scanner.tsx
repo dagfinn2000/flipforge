@@ -51,12 +51,16 @@ const CSV_COLUMNS = [
   { key: "est_fill_hours", label: "est_fill_hours" },
   { key: "margin_cv", label: "margin_variability" },
   { key: "flip_score", label: "flip_score" },
+  { key: "track_score", label: "month_profitability_score" },
+  { key: "track_win_rate", label: "month_win_rate" },
+  { key: "track_median_profit", label: "month_median_gp_per_cycle" },
+  { key: "track_samples", label: "month_graded_flips" },
   { key: "crossed", label: "crossed_quote" },
   { key: "data_age_seconds", label: "quote_age_seconds" },
 ];
 
 const COLUMNS: ColumnKey[] = [
-  "score", "buy", "sell", "margin", "breakeven", "roi", "profit",
+  "score", "month", "buy", "sell", "margin", "breakeven", "roi", "profit",
   "vol24", "limit", "fill", "steadiness", "rsi", "change24h", "age",
 ];
 
@@ -162,6 +166,20 @@ export default function Scanner() {
                 value={filters.max_margin_cv ?? ""}
                 onChange={(e) =>
                   set("max_margin_cv", e.target.value === "" ? undefined : Number(e.target.value))
+                }
+              />
+            </div>
+            <div className="field">
+              <label title="Trailing-month realised profitability, from graded flips">
+                Min month score
+              </label>
+              <input
+                type="number"
+                step={5}
+                placeholder="0"
+                value={filters.min_track_score ?? ""}
+                onChange={(e) =>
+                  set("min_track_score", e.target.value === "" ? undefined : Number(e.target.value))
                 }
               />
             </div>

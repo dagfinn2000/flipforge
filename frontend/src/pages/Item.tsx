@@ -198,7 +198,18 @@ export default function ItemPage() {
         <div className="card stat">
           <div className="label">Flip score</div>
           <div className="value gold">{d?.flip_score ? d.flip_score.toFixed(0) : "--"}</div>
-          <div className="foot">{gpShort(d?.potential_profit)} gp per 4h cycle</div>
+          <div className="foot">how good the quote looks right now</div>
+        </div>
+        <div className="card stat" title="Trailing-month realised profitability, from graded flips">
+          <div className="label">Month score</div>
+          <div className={clsx("value", (d?.track_score ?? 0) >= 50 ? "up" : "flat")}>
+            {d?.track_score != null ? d.track_score.toFixed(0) : "--"}
+          </div>
+          <div className="foot">
+            {d?.track_samples
+              ? `${pct(d.track_win_rate, 0, false)} of ${num(d.track_samples)} flips paid`
+              : "not enough graded flips yet"}
+          </div>
         </div>
       </div>
 
@@ -266,7 +277,10 @@ export default function ItemPage() {
 
       <div className="grid cols-3">
         <div className="card">
-          <div className="card-head"><h2>Why this score</h2></div>
+          <div className="card-head">
+            <h2>Why this score</h2>
+            <span className="hint">forward looking</span>
+          </div>
           <div className="card-body">
             {breakdown ? (
               <>

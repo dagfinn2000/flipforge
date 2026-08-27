@@ -78,7 +78,7 @@ export default function Dashboard() {
         </div>
         <ItemTable
           rows={top.data?.results ?? []}
-          columns={["score", "buy", "sell", "margin", "breakeven", "roi", "profit", "vol24", "limit", "fill"]}
+          columns={["score", "month", "buy", "sell", "margin", "breakeven", "roi", "profit", "vol24", "limit", "fill"]}
           emptyTitle={top.isLoading ? "Loading market data..." : "No profitable flips found"}
           emptyBody="If this persists, price history is probably still building."
         />

@@ -58,11 +58,18 @@ async def search(
 async def detail(item_id: int):
     record = await db.fetchrow(
         f"""SELECT {ITEM_COLUMNS}, m.*, l.high_time, l.low_time, l.fetched_at,
-                   (x.item_id IS NOT NULL) AS tax_exempt
+                   (x.item_id IS NOT NULL) AS tax_exempt,
+                   t.track_score, t.samples AS track_samples,
+                   t.win_rate AS track_win_rate,
+                   t.median_cycle_profit AS track_median_profit,
+                   t.median_margin AS track_median_margin,
+                   t.window_days AS track_window_days,
+                   t.track_components
               FROM items i
               LEFT JOIN metrics m ON m.item_id = i.id
               LEFT JOIN latest l ON l.item_id = i.id
               LEFT JOIN tax_exemptions x ON x.item_id = i.id
+              LEFT JOIN item_track_record t ON t.item_id = i.id
              WHERE i.id = $1""",
         item_id,
     )
@@ -76,6 +83,8 @@ async def detail(item_id: int):
     # shows the model's own working rather than a recomputation of it.
     components = record["score_components"]
     data["score_breakdown"] = json.loads(components) if isinstance(components, str) else components
+    track = record["track_components"]
+    data["track_breakdown"] = json.loads(track) if isinstance(track, str) else track
 
     data["watched"] = bool(await db.fetchval("SELECT 1 FROM watchlist WHERE item_id = $1", item_id))
     data["tax_policy"] = policy.describe()

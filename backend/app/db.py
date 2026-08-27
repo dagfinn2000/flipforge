@@ -66,6 +66,21 @@ async def migrate() -> None:
     log.info("schema applied")
 
 
+async def run_long(query: str, *args: Any, fetch_rows: bool = False):
+    """Run one analytical statement on its own connection with no time limit.
+
+    The pool caps commands at 60 seconds, which is right for request handling
+    and wrong for month-wide aggregates: a statement that scans a million
+    snapshots is not a stuck query, and killing it means the work never
+    completes at all.
+    """
+    conn = await asyncpg.connect(settings.database_url, command_timeout=None)
+    try:
+        return await (conn.fetch(query, *args) if fetch_rows else conn.execute(query, *args))
+    finally:
+        await conn.close()
+
+
 async def fetch(query: str, *args: Any) -> list[asyncpg.Record]:
     async with pool().acquire() as conn:
         return await conn.fetch(query, *args)

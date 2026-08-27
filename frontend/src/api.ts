@@ -32,6 +32,7 @@ export interface ScannerFilters {
   min_roi?: number;
   min_volume?: number;
   min_score?: number;
+  min_track_score?: number;
   min_price?: number;
   max_price?: number;
   min_buy_limit?: number;
@@ -51,6 +52,7 @@ export interface AllocatorRequest {
   slots: number;
   min_volume?: number;
   min_score?: number;
+  min_track_score?: number;
   max_quote_age?: number;
   members?: boolean | null;
   max_share?: number;

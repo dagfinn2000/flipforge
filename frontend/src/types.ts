@@ -34,6 +34,11 @@ export interface ItemRow {
   potential_profit?: number | null;
   flip_score?: number | null;
   data_age_seconds?: number | null;
+  /** Trailing-month realised profitability, from graded flips. */
+  track_score?: number | null;
+  track_samples?: number | null;
+  track_win_rate?: number | null;
+  track_median_profit?: number | null;
   affordable_quantity?: number;
   affordable_profit?: number;
   signal?: string;
@@ -81,6 +86,9 @@ export interface ItemDetail extends ItemRow {
   low_time?: number | null;
   watched: boolean;
   score_breakdown: ScoreBreakdown | null;
+  track_breakdown: ScoreBreakdown | null;
+  track_median_margin?: number | null;
+  track_window_days?: number | null;
   tax_policy: TaxPolicy;
   limit_window: LimitWindow;
   limit_cycle?: { quantity: number; capital: number; profit: number };

@@ -19,6 +19,7 @@ SORTS = {
     "change_24h": "m.price_change_24h DESC NULLS LAST",
     "volatility": "m.volatility_24h DESC NULLS LAST",
     "fill": "m.est_fill_hours ASC NULLS LAST",
+    "track": "t.track_score DESC NULLS LAST",
     "name": "i.name ASC",
 }
 
@@ -31,10 +32,13 @@ SELECT i.id, i.name, i.icon, i.members, i.buy_limit, i.highalch,
        m.vol_1h, m.vol_24h, m.flow_ratio, m.avg_margin_24h, m.margin_cv,
        m.margin_positive_24h, m.price_change_1h, m.price_change_24h, m.price_change_7d,
        m.volatility_24h, m.zscore_24h, m.vol_zscore, m.rsi_14,
-       m.est_fill_hours, m.potential_profit, m.flip_score, m.data_age_seconds
+       m.est_fill_hours, m.potential_profit, m.flip_score, m.data_age_seconds,
+       t.track_score, t.samples AS track_samples, t.win_rate AS track_win_rate,
+       t.median_cycle_profit AS track_median_profit
   FROM metrics m
   JOIN items i ON i.id = m.item_id
   LEFT JOIN tax_exemptions x ON x.item_id = m.item_id
+  LEFT JOIN item_track_record t ON t.item_id = m.item_id
 """
 
 
@@ -44,6 +48,10 @@ async def scanner(
     min_roi: float = Query(0.0, description="fraction, 0.02 == 2%"),
     min_volume: int = Query(200, description="units traded in the last 24h"),
     min_score: float = Query(0.0, ge=0, le=100),
+    min_track_score: float = Query(
+        0.0, ge=0, le=100,
+        description="minimum trailing-month realised profitability score",
+    ),
     max_price: Optional[int] = None,
     min_price: Optional[int] = None,
     min_buy_limit: Optional[int] = None,
@@ -70,6 +78,8 @@ async def scanner(
     add("COALESCE(m.roi, 0) >= ${n}", min_roi)
     add("COALESCE(m.vol_24h, 0) >= ${n}", min_volume)
     add("COALESCE(m.flip_score, 0) >= ${n}", min_score)
+    if min_track_score > 0:
+        add("COALESCE(t.track_score, 0) >= ${n}", min_track_score)
     add("COALESCE(m.data_age_seconds, 999999) <= ${n}", max_age)
     if max_price is not None:
         add("m.high <= ${n}", max_price)
