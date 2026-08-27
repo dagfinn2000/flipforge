@@ -1,6 +1,7 @@
 import type {
-  Alert, AlertEvent, AllocatorPlan, ItemDetail, ItemRow, MarketSummary,
-  PortfolioResponse, Series, Trade, ValidationResponse, ValidationSummary,
+  Alert, AlertEvent, AllocatorPlan, GapReport, Health, ItemDetail, ItemRow,
+  MarketSummary, PortfolioResponse, Series, StorageReport, SystemConfig, Trade,
+  ScoreHistoryRow, ValidationResponse, ValidationSummary,
 } from "./types";
 
 const BASE = import.meta.env.VITE_API_BASE ?? "";
@@ -59,7 +60,7 @@ export interface AllocatorRequest {
 
 export const api = {
   summary: () => request<MarketSummary>("/api/market/summary"),
-  health: () => request<Record<string, unknown>>("/api/health"),
+  health: () => request<Health>("/api/health"),
 
   scanner: (f: ScannerFilters) =>
     request<{ results: ItemRow[]; count: number; sort: string }>(`/api/scanner${qs(f)}`),
@@ -77,7 +78,15 @@ export const api = {
     request<Record<string, number | boolean | null>>(
       `/api/items/${id}/calculator${qs({ buy, sell, quantity })}`,
     ),
-  config: () => request<Record<string, unknown>>("/api/config"),
+  config: () => request<SystemConfig>("/api/config"),
+  gaps: () => request<GapReport>("/api/config/gaps"),
+  fillGaps: () =>
+    request<{ ok: boolean; status: GapReport }>("/api/config/gaps/fill", { method: "POST" }),
+  storage: () => request<StorageReport>("/api/config/storage"),
+  cleanup: () =>
+    request<{ ok: boolean; storage: StorageReport }>("/api/config/storage/cleanup", {
+      method: "POST",
+    }),
 
   watchlist: () => request<{ results: ItemRow[] }>("/api/watchlist"),
   watch: (item_id: number, note?: string) =>
@@ -125,6 +134,10 @@ export const api = {
     request<ValidationResponse>(`/api/validation/deciles${qs({ horizon, days, source })}`),
   validationSummary: (days = 7) =>
     request<ValidationSummary>(`/api/validation/summary${qs({ days })}`),
+  scoreHistory: (item_id: number, horizon = "4h", limit = 60) =>
+    request<{ results: ScoreHistoryRow[] }>(
+      `/api/validation/history${qs({ item_id, horizon, limit })}`,
+    ),
   trades: (item_id?: number) =>
     request<{ results: Trade[] }>(`/api/portfolio/trades${qs({ item_id })}`),
   addTrade: (body: {

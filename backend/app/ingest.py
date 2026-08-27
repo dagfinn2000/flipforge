@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 from . import db, indicators, maintenance, money, policy, scoring
@@ -129,8 +129,28 @@ async def _upsert_candles(rows: list[tuple]) -> None:
     )
 
 
-def _as_numeric(value: Any) -> Optional[Decimal]:
-    return Decimal(str(value)) if value is not None else None
+# The NUMERIC columns these feed hold six or eight integer digits, but the
+# values are ratios of live market data and are unbounded in principle: a one
+# coin buy price against a large sell price yields an enormous ROI, and a mean
+# margin near zero yields an enormous coefficient of variation. A single such
+# row would fail the whole batch upsert and stall the rollup for every item, so
+# they are clamped at the column's range instead of trusted.
+NUMERIC_CEILING = Decimal("999999")
+PCT_CEILING = Decimal("99999999")
+
+
+def _as_numeric(value: Any, ceiling: Optional[Decimal] = None) -> Optional[Decimal]:
+    if value is None:
+        return None
+    try:
+        out = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    if not out.is_finite():
+        return None
+    if ceiling is not None:
+        out = max(min(out, ceiling), -ceiling)
+    return out
 
 
 async def store_bulk(timestep: str, timestamp: Optional[int] = None) -> int:
@@ -539,13 +559,14 @@ async def compute_metrics() -> int:
         )
 
         payload.append((
-            item_id, high, low, unit_tax, m, roi, breakeven, crossed,
+            item_id, high, low, unit_tax, m,
+            _as_numeric(roi, NUMERIC_CEILING), breakeven, crossed,
             vol_1h, vol_24h, buy_vol, sell_vol, flow,
-            _as_numeric(avg_margin), _as_numeric(margin_cv),
+            _as_numeric(avg_margin), _as_numeric(margin_cv, NUMERIC_CEILING),
             _as_numeric(_float(r["margin_positive_24h"])),
-            _as_numeric(indicators.pct_change(_float(r["mid_1h"]), mid_now)),
-            _as_numeric(indicators.pct_change(_float(r["mid_24h"]), mid_now)),
-            _as_numeric(indicators.pct_change(_float(r["mid_7d"]), mid_now)),
+            _as_numeric(indicators.pct_change(_float(r["mid_1h"]), mid_now), PCT_CEILING),
+            _as_numeric(indicators.pct_change(_float(r["mid_24h"]), mid_now), PCT_CEILING),
+            _as_numeric(indicators.pct_change(_float(r["mid_7d"]), mid_now), PCT_CEILING),
             r["volatility_24h"], z, vz, r["rsi_14"], fill_h, potential,
             _as_numeric(score.total), json.dumps(score.as_dict()), r["data_age_seconds"],
         ))
@@ -701,9 +722,10 @@ async def reconstruct_snapshots(hours: int = 96) -> int:
                 # historical score and skewing the comparison.
                 quote_age_seconds=300,
             )
-            payload.append(
-                (item_id, asof, _as_numeric(score.total), buy, sell, m, roi, vol_24h, qty)
-            )
+            payload.append((
+                item_id, asof, _as_numeric(score.total), buy, sell, m,
+                _as_numeric(roi, NUMERIC_CEILING), vol_24h, qty,
+            ))
 
         if payload:
             await db.executemany(

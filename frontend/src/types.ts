@@ -288,3 +288,62 @@ export interface ValidationSummary {
   snapshots_awaiting_grade: number;
   note: string;
 }
+
+
+export interface Health {
+  status: string;
+  uptime_seconds: number;
+  items: number;
+  ws_clients: number;
+  seconds_since_price_poll: number | null;
+  seconds_since_metrics: number | null;
+  backfill_complete: boolean;
+  tax_policy: TaxPolicy;
+}
+
+export interface SystemConfig {
+  version: string;
+  source: string;
+  user_agent: string;
+  tax_policy: TaxPolicy;
+  poll_seconds: Record<string, number>;
+  slots: { members: number; free_to_play: number };
+  retention: Record<string, number | string>;
+}
+
+export interface GapStep {
+  missing_windows: number;
+  windows_considered: number;
+  covering_hours: number;
+  lookback_hours: number;
+  oldest_gap: number | null;
+  newest_gap: number | null;
+  coverage: number | null;
+}
+
+export interface GapReport {
+  enabled: boolean;
+  steps: Record<string, GapStep>;
+  known_thin_windows: number;
+  last_run: number | null;
+  max_requests_per_pass: number;
+}
+
+export interface StorageReport {
+  total_bytes: number;
+  tables: { table: string; bytes: number; rows: number }[];
+  retention: Record<string, number | string>;
+  last_maintenance: number | null;
+}
+
+
+export interface ScoreHistoryRow {
+  ts: number;
+  score: number | null;
+  buy: number | null;
+  sell: number | null;
+  predicted_margin: number | null;
+  exit_price: number | null;
+  realised_margin: number | null;
+  realised_roi: number | null;
+}

@@ -70,6 +70,11 @@ export default function ItemPage() {
     }
   }, [item.data, buyAt, sellAt]);
 
+  const history = useQuery({
+    queryKey: ["score-history", itemId],
+    queryFn: () => api.scoreHistory(itemId, "4h", 60),
+  });
+
   const calc = useQuery({
     queryKey: ["calc", itemId, buyAt, sellAt, qty],
     queryFn: () =>
@@ -111,6 +116,18 @@ export default function ItemPage() {
 
   const d = item.data;
   const breakdown = d?.score_breakdown;
+
+  const graded = history.data?.results ?? [];
+  const winRate = graded.length
+    ? graded.filter((r) => (r.realised_margin ?? 0) > 0).length / graded.length
+    : 0;
+  const medianRealised = (() => {
+    const values = graded
+      .map((r) => r.realised_margin)
+      .filter((v): v is number => v !== null)
+      .sort((a, b) => a - b);
+    return values.length ? values[Math.floor(values.length / 2)] : 0;
+  })();
 
   const spreadSplit = useMemo(() => {
     if (!d?.flow_ratio) return null;
@@ -389,6 +406,71 @@ export default function ItemPage() {
             )}
           </div>
         </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 16 }}>
+        <div className="card-head">
+          <h2>Track record</h2>
+          <span className="hint">
+            what this item's score claimed, against what it actually returned 4h later
+          </span>
+        </div>
+        {history.data?.results.length ? (
+          <>
+            <div className="card-body" style={{ paddingBottom: 4 }}>
+              <div className="grid cols-3">
+                <div>
+                  <div className="label" style={{ fontSize: 11 }}>Graded snapshots</div>
+                  <div className="mono" style={{ fontSize: 18 }}>{history.data.results.length}</div>
+                </div>
+                <div>
+                  <div className="label" style={{ fontSize: 11 }}>Ended profitable</div>
+                  <div className={clsx("mono", winRate >= 0.5 ? "up" : "down")} style={{ fontSize: 18 }}>
+                    {pct(winRate, 0, false)}
+                  </div>
+                </div>
+                <div>
+                  <div className="label" style={{ fontSize: 11 }}>Median realised margin</div>
+                  <div className={clsx("mono", medianRealised >= 0 ? "up" : "down")} style={{ fontSize: 18 }}>
+                    {gp(medianRealised, { sign: true })}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="table-wrap" style={{ maxHeight: 260, overflowY: "auto" }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>When</th><th>Score</th><th>Buy</th>
+                    <th>Claimed margin</th><th>Exit</th><th>Actually got</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.data.results.map((row) => (
+                    <tr key={row.ts}>
+                      <td className="num flat" style={{ textAlign: "left" }}>{ago(row.ts)}</td>
+                      <td className="num">{row.score?.toFixed(0) ?? "--"}</td>
+                      <td className="num">{gp(row.buy)}</td>
+                      <td className="num">{gp(row.predicted_margin, { sign: true })}</td>
+                      <td className="num">{gp(row.exit_price)}</td>
+                      <td className={clsx("num", (row.realised_margin ?? 0) >= 0 ? "up" : "down")}>
+                        {gp(row.realised_margin, { sign: true })}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : (
+          <div className="empty">
+            <h3>Not graded yet</h3>
+            <p>
+              Scores are frozen hourly and graded once the holding period has passed.
+              This item has no matured snapshots yet.
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="card" style={{ marginTop: 16 }}>

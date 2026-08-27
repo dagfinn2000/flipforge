@@ -30,6 +30,7 @@ class Candidate:
     score: float = 0.0
     volume_24h: int = 0
     buy_limit: Optional[int] = None
+    limit_used: int = 0          # of the rolling 4h allowance, from the trade log
     est_fill_hours: Optional[float] = None
     icon_url: Optional[str] = None
     members: bool = False
@@ -56,7 +57,11 @@ class Allocation:
         return {
             "item_id": c.item_id, "name": c.name, "icon_url": c.icon_url,
             "price": c.price, "margin": c.margin, "roi": c.roi, "score": c.score,
-            "buy_limit": c.buy_limit, "volume_24h": c.volume_24h,
+            "buy_limit": c.buy_limit, "limit_used": c.limit_used,
+            "limit_remaining": (
+                max(c.buy_limit - c.limit_used, 0) if c.buy_limit else None
+            ),
+            "volume_24h": c.volume_24h,
             "est_fill_hours": c.est_fill_hours, "members": c.members,
             "quantity": self.quantity, "capital": self.capital,
             "profit": self.profit, "pinned": self.pinned,

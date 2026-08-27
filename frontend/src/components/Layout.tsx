@@ -16,6 +16,7 @@ const NAV = [
   { to: "/portfolio", label: "Portfolio", icon: "◑" },
   { to: "/alerts", label: "Alerts", icon: "◉" },
   { to: "/validation", label: "Score check", icon: "◈" },
+  { to: "/system", label: "System", icon: "⚙" },
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {

@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { api, type ScannerFilters } from "../api";
 import ItemTable, { type ColumnKey } from "../components/ItemTable";
-import { gpShort, num } from "../lib/format";
+import { downloadCsv, gpShort, num } from "../lib/format";
 
 /** Starting points for common flipping styles. */
 const PRESETS: { name: string; hint: string; filters: ScannerFilters }[] = [
@@ -32,6 +32,27 @@ const PRESETS: { name: string; hint: string; filters: ScannerFilters }[] = [
     hint: "Sorted by biggest 24h drop -- possible bounce",
     filters: { min_volume: 2_000, min_margin: 1, sort: "change_24h" },
   },
+];
+
+// Every margin figure exported is post-tax, same as on screen.
+const CSV_COLUMNS = [
+  { key: "id", label: "item_id" },
+  { key: "name", label: "name" },
+  { key: "members", label: "members" },
+  { key: "low", label: "buy_at" },
+  { key: "high", label: "sell_at" },
+  { key: "breakeven_sell", label: "breakeven_sell" },
+  { key: "tax", label: "tax_per_unit" },
+  { key: "margin", label: "margin_post_tax" },
+  { key: "roi", label: "roi" },
+  { key: "potential_profit", label: "gp_per_cycle" },
+  { key: "buy_limit", label: "buy_limit" },
+  { key: "vol_24h", label: "volume_24h" },
+  { key: "est_fill_hours", label: "est_fill_hours" },
+  { key: "margin_cv", label: "margin_variability" },
+  { key: "flip_score", label: "flip_score" },
+  { key: "crossed", label: "crossed_quote" },
+  { key: "data_age_seconds", label: "quote_age_seconds" },
 ];
 
 const COLUMNS: ColumnKey[] = [
@@ -224,7 +245,22 @@ export default function Scanner() {
       <div className="card">
         <div className="card-head">
           <h2>Results</h2>
-          <span className="hint">click a column header to re-rank</span>
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <span className="hint">click a column header to re-rank</span>
+            <button
+              className="btn small"
+              disabled={!data?.results.length}
+              onClick={() =>
+                downloadCsv(
+                  `flipforge-scanner-${new Date().toISOString().slice(0, 10)}.csv`,
+                  CSV_COLUMNS,
+                  (data?.results ?? []) as unknown as Record<string, unknown>[],
+                )
+              }
+            >
+              Export CSV
+            </button>
+          </div>
         </div>
         <ItemTable
           rows={data?.results ?? []}

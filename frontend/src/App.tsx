@@ -9,6 +9,7 @@ import Portfolio from "./pages/Portfolio";
 import Alerts from "./pages/Alerts";
 import Allocator from "./pages/Allocator";
 import Validation from "./pages/Validation";
+import System from "./pages/System";
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
         <Route path="/item/:id" element={<ItemPage />} />
         <Route path="/allocator" element={<Allocator />} />
         <Route path="/validation" element={<Validation />} />
+        <Route path="/system" element={<System />} />
         <Route path="/watchlist" element={<Watchlist />} />
         <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/alerts" element={<Alerts />} />

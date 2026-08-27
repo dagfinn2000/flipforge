@@ -140,6 +140,14 @@ def flip_score(
             score.notes.append("no post-tax edge at the current quote")
         return score
 
+    # Nor is something nobody traded. A quoted spread on a silent market is a
+    # price two people once agreed on, not an opportunity, and the remaining
+    # components would otherwise still award it a middling score.
+    if not volume_24h:
+        score.components = [Component(k, 0.0, w) for k, w in WEIGHTS.items()]
+        score.notes.append("no trades recorded in the last 24 hours")
+        return score
+
     stability = (
         linear_band(margin_cv, STABILITY_CV_GOOD, STABILITY_CV_BAD, invert=True)
         if margin_cv is not None
@@ -187,9 +195,16 @@ def est_fill_hours(buy_limit: Optional[int], hourly_volume: Optional[float]) -> 
 
 
 def fillable_quantity(buy_limit: Optional[int], volume_24h: Optional[int]) -> int:
-    """Units it is realistic to move in one 4 hour cycle."""
-    limit = buy_limit or 0
-    if limit <= 0:
-        limit = int((volume_24h or 0) / 24)
-    flow_cap = int((volume_24h or 0) / 6 * 0.25)   # a quarter of a 4h window's flow
-    return max(0, min(limit, flow_cap) if flow_cap else limit)
+    """Units it is realistic to move in one 4 hour cycle.
+
+    An item that did not trade at all yields zero. The buy limit is a ceiling on
+    what the game permits, never evidence that a buyer exists: treating a silent
+    market as fillable is how an item that has not traded in a day ends up
+    advertising billions of gp per cycle.
+    """
+    volume = volume_24h or 0
+    if volume <= 0:
+        return 0
+    limit = buy_limit if buy_limit and buy_limit > 0 else int(volume / 24)
+    flow_cap = int(volume / 6 * 0.25)   # a quarter of a 4h window's flow
+    return max(0, min(limit, flow_cap))

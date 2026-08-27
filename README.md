@@ -45,10 +45,11 @@ covers your cost.
 | **Dashboard** | What is the market doing right now: best flips, movers over 1h/24h/7d, unusual activity, total volume |
 | **Flip scanner** | Every item, filterable on margin, ROI, volume, buy limit, price band, score, quote age, fill time and margin steadiness. Enter your capital and it shows only what you can afford, quantity capped by the buy limit |
 | **Slot allocator** | Given *this* bankroll and *these* slots, what should I actually buy — the question a ranked list cannot answer |
-| **Item page** | Two-sided price chart, auditable score breakdown, market depth, rolling buy-limit state, profit calculator, one-click alerts |
+| **Item page** | Two-sided price chart, auditable score breakdown, market depth, rolling buy-limit state, profit calculator, one-click alerts, and this item's own track record — what its score claimed against what it actually returned |
 | **Portfolio** | FIFO cost basis, realised and unrealised P&L, breakeven per position, total tax paid |
 | **Alerts** | Threshold rules with hysteresis and cooldown, delivered live over a websocket |
 | **Score check** | Whether the flip score actually predicted anything, measured against what the market did |
+| **System** | Ingest heartbeat, history coverage, database size and the tax rules in force, with buttons to repair gaps or run cleanup |
 
 <kbd>Cmd/Ctrl</kbd>+<kbd>K</kbd> or <kbd>/</kbd> opens item search from anywhere.
 
@@ -70,6 +71,12 @@ It is a heuristic, not a proof of optimality, and it is labelled as one. It
 respects buy limits, per-item capital, and a diversification cap so it will not
 put everything into one thin item. Pin an item to force it in, exclude one to
 rule it out, and re-solve.
+
+Buy limits are a rolling four-hour window, so the allocator reads your trade log
+and works from what is *still available* rather than the published number. An
+item whose limit you have already spent is dropped from the basket and reported
+separately, because advising a purchase the game will refuse is worse than
+advising nothing.
 
 ### The flip score, and checking whether it works
 
@@ -228,6 +235,9 @@ frontend/src/
   components/    Layout, PriceChart, ItemTable, SearchPalette
   pages/         Dashboard, Scanner, Allocator, Item, Watchlist, Portfolio, Alerts, Validation
 ```
+
+Scanner results export to CSV, with every margin column post-tax like the rest
+of the app.
 
 Full JSON API at **`/api/docs`**, scriptable, CORS-open. The UI is one client,
 not the only one.

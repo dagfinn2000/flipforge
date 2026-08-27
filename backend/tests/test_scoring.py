@@ -109,3 +109,37 @@ class TestProperties:
         """Every component is monotone in the right direction by construction."""
         lo, hi = min(a, b), max(a, b)
         assert score(potential_profit=lo).total <= score(potential_profit=hi).total
+
+
+class TestSilentMarkets:
+    """An item nobody traded is not an opportunity, however good its spread looks."""
+
+    def test_nothing_is_fillable_without_volume(self):
+        assert scoring.fillable_quantity(70, 0) == 0
+        assert scoring.fillable_quantity(70, None) == 0
+        assert scoring.fillable_quantity(30_000, 0) == 0
+
+    def test_buy_limit_is_a_ceiling_not_evidence(self):
+        """The regression: a silent market once advertised billions per cycle
+        because the buy limit was used as the quantity when volume was zero."""
+        assert scoring.fillable_quantity(30_000, 0) == 0
+
+    def test_volume_too_thin_to_fill_anything_rounds_to_zero(self):
+        # 20 units a day is ~3 in a 4h window; a quarter of that is not one unit.
+        assert scoring.fillable_quantity(1000, 20) == 0
+
+    def test_score_is_zero_without_volume(self):
+        s = flip_score(
+            roi=Decimal("0.3"), margin=50_000, potential_profit=2_000_000_000,
+            volume_24h=0, margin_cv=0.1, est_fill_hours=0.1, quote_age_seconds=0,
+        )
+        assert s.total == 0.0
+        assert any("no trades" in n for n in s.notes)
+        assert all(c.value == 0.0 for c in s.components)
+
+    def test_a_single_traded_unit_still_scores(self):
+        s = flip_score(
+            roi=Decimal("0.05"), margin=1000, potential_profit=1000,
+            volume_24h=5000, margin_cv=0.3, est_fill_hours=1.0, quote_age_seconds=60,
+        )
+        assert s.total > 0

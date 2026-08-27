@@ -58,3 +58,29 @@ export function tone(value: number | null | undefined): string {
 export function clsx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(" ");
 }
+
+
+/** Serialise rows to CSV and hand the browser a download.
+ *  Values are quoted and internal quotes doubled, per RFC 4180. */
+export function downloadCsv(
+  filename: string,
+  columns: { key: string; label: string }[],
+  rows: Record<string, unknown>[],
+): void {
+  const cell = (v: unknown): string => {
+    if (v === null || v === undefined) return "";
+    const s = typeof v === "number" ? String(v) : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const csv = [
+    columns.map((c) => cell(c.label)).join(","),
+    ...rows.map((r) => columns.map((c) => cell(r[c.key])).join(",")),
+  ].join("\n");
+
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
