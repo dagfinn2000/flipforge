@@ -240,7 +240,7 @@ export default function ItemPage() {
           <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--text-faint)" }}>
             {mode === "candles"
               ? "Candles are derived: the exchange publishes average high and low per interval, not a true open and close."
-              : "Red is what impatient buyers pay (your sell price). Green is what impatient sellers accept (your buy price). The gap between them is your gross margin."}
+              : "Red is what impatient buyers pay (your sell price). Green is what impatient sellers accept (your buy price). The shaded band between them is the gross spread; your post-tax margin is always smaller. Volume bars below are split by side: the lower segment traded at the instant-buy price, the upper at the instant-sell price."}
             {series.data?.volatility != null &&
               ` · volatility ${(series.data.volatility * 100).toFixed(2)}% per interval`}
           </div>

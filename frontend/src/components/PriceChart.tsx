@@ -15,10 +15,17 @@ const COLORS = {
   sma50: "#7c6df2",
   vwap: "#6aa6f8",
   band: "rgba(124, 109, 242, 0.35)",
-  volBuy: "rgba(242, 99, 126, 0.35)",
-  volSell: "rgba(78, 201, 160, 0.35)",
+  // The shaded gap between the two lines: this is the gross spread you are
+  // trading. The post-tax margin is always smaller, and is the number the rest
+  // of the app reports.
+  spreadFill: "rgba(124, 109, 242, 0.16)",
+  volBuy: "rgba(242, 99, 126, 0.55)",
+  volSell: "rgba(78, 201, 160, 0.5)",
   grid: "#1a2231",
   text: "#8695ad",
+  // Opaque, and must match the chart background exactly: the lower area series
+  // is a mask that hides the part of the fill below the buy line.
+  background: "#121722",
 };
 
 export type Overlay = "sma20" | "sma50" | "vwap" | "bollinger";
@@ -41,6 +48,8 @@ interface Hover {
 
 const asTime = (t: number) => t as UTCTimestamp;
 
+type SeriesKind = "Line" | "Candlestick" | "Histogram" | "Area";
+
 /** Turns the wiki's average high/low pair into a drawable OHLC candle.
  *  There is no true open or close in the source data, so the previous
  *  midpoint opens the bar and the current midpoint closes it. */
@@ -59,7 +68,7 @@ function toCandles(points: SeriesPoint[]): CandlestickData[] {
 export default function PriceChart({ points, overlays, mode, height = 380 }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const series = useRef<Record<string, ISeriesApi<"Line" | "Candlestick" | "Histogram">>>({});
+  const series = useRef<Record<string, ISeriesApi<SeriesKind>>>({});
   const [hover, setHover] = useState<Hover | null>(null);
 
   // Build the chart once; data and overlay changes update it in place.
@@ -68,7 +77,7 @@ export default function PriceChart({ points, overlays, mode, height = 380 }: Pro
     const chart = createChart(container.current, {
       height,
       layout: {
-        background: { type: ColorType.Solid, color: "transparent" },
+        background: { type: ColorType.Solid, color: COLORS.background },
         textColor: COLORS.text,
         fontFamily: "SF Mono, JetBrains Mono, ui-monospace, monospace",
         fontSize: 11,
@@ -110,8 +119,8 @@ export default function PriceChart({ points, overlays, mode, height = 380 }: Pro
     Object.values(series.current).forEach((s) => chart.removeSeries(s));
     series.current = {};
 
-    const add = (key: string, s: ISeriesApi<"Line" | "Candlestick" | "Histogram">) => {
-      series.current[key] = s;
+    const add = <K extends SeriesKind>(key: string, s: ISeriesApi<K>) => {
+      series.current[key] = s as ISeriesApi<SeriesKind>;
       return s;
     };
 
@@ -120,21 +129,46 @@ export default function PriceChart({ points, overlays, mode, height = 380 }: Pro
         upColor: COLORS.sell, downColor: COLORS.buy,
         wickUpColor: COLORS.sell, wickDownColor: COLORS.buy,
         borderVisible: false, priceLineVisible: false,
-      }) as ISeriesApi<"Candlestick">);
-      (candles as ISeriesApi<"Candlestick">).setData(toCandles(points));
+      }));
+      candles.setData(toCandles(points));
     } else {
+      // Shade the gap between the two prices. lightweight-charts has no band
+      // primitive, so this is the standard two-area trick: fill from the upper
+      // line down to the axis, then paint an opaque area under the lower line
+      // in the background colour to mask everything below it. Only points where
+      // both sides traded take part, so the band is never guessed at.
+      const bothSides = points.filter((p) => p.high != null && p.low != null);
+
+      const shade = add("shade", chart.addAreaSeries({
+        topColor: COLORS.spreadFill, bottomColor: COLORS.spreadFill,
+        lineColor: "rgba(0,0,0,0)", lineWidth: 1,
+        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+      }));
+      shade.setData(
+        bothSides.map((p) => ({ time: asTime(p.t), value: p.high! })) as LineData[],
+      );
+
+      const mask = add("mask", chart.addAreaSeries({
+        topColor: COLORS.background, bottomColor: COLORS.background,
+        lineColor: "rgba(0,0,0,0)", lineWidth: 1,
+        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+      }));
+      mask.setData(
+        bothSides.map((p) => ({ time: asTime(p.t), value: p.low! })) as LineData[],
+      );
+
       const sell = add("sell", chart.addLineSeries({
         color: COLORS.buy, lineWidth: 2, priceLineVisible: false,
         title: "sell at", lastValueVisible: true,
-      }) as ISeriesApi<"Line">);
+      }));
       const buy = add("buy", chart.addLineSeries({
         color: COLORS.sell, lineWidth: 2, priceLineVisible: false,
         title: "buy at", lastValueVisible: true,
-      }) as ISeriesApi<"Line">);
-      (sell as ISeriesApi<"Line">).setData(
+      }));
+      sell.setData(
         points.filter((p) => p.high != null).map((p) => ({ time: asTime(p.t), value: p.high! })) as LineData[],
       );
-      (buy as ISeriesApi<"Line">).setData(
+      buy.setData(
         points.filter((p) => p.low != null).map((p) => ({ time: asTime(p.t), value: p.low! })) as LineData[],
       );
     }
@@ -150,8 +184,8 @@ export default function PriceChart({ points, overlays, mode, height = 380 }: Pro
         const line = add(spec.id, chart.addLineSeries({
           color: spec.color, lineWidth: 1, priceLineVisible: false,
           lastValueVisible: false, title: spec.label,
-        }) as ISeriesApi<"Line">);
-        (line as ISeriesApi<"Line">).setData(
+        }));
+        line.setData(
           points
             .filter((p) => p[spec.key] != null)
             .map((p) => ({ time: asTime(p.t), value: p[spec.key] as number })) as LineData[],
@@ -163,27 +197,33 @@ export default function PriceChart({ points, overlays, mode, height = 380 }: Pro
         const line = add(key, chart.addLineSeries({
           color: COLORS.band, lineWidth: 1, lineStyle: LineStyle.Dashed,
           priceLineVisible: false, lastValueVisible: false,
-        }) as ISeriesApi<"Line">);
-        (line as ISeriesApi<"Line">).setData(
+        }));
+        line.setData(
           points.filter((p) => p[key] != null).map((p) => ({ time: asTime(p.t), value: p[key]! })) as LineData[],
         );
       });
     }
 
-    // Volume sits on its own hidden scale pinned to the bottom quarter.
-    const volume = add("volume", chart.addHistogramSeries({
-      priceFormat: { type: "volume" },
-      priceScaleId: "volume",
-      priceLineVisible: false,
-      lastValueVisible: false,
-    }) as ISeriesApi<"Histogram">);
+    // Volume, split by side, on its own scale pinned to the bottom quarter.
+    // Two histograms stacked by drawing the total first and the buy side over
+    // it, so the lower segment of each bar is volume that traded at the
+    // instant-buy price and the upper segment is volume that traded at the
+    // instant-sell price. A combined bar hides which side of the book is
+    // actually active, which is half of what the chart is for.
+    const totalVolume = add("volume_total", chart.addHistogramSeries({
+      priceFormat: { type: "volume" }, priceScaleId: "volume",
+      priceLineVisible: false, lastValueVisible: false, color: COLORS.volSell,
+    }));
+    const buyVolume = add("volume_buy", chart.addHistogramSeries({
+      priceFormat: { type: "volume" }, priceScaleId: "volume",
+      priceLineVisible: false, lastValueVisible: false, color: COLORS.volBuy,
+    }));
     chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
-    (volume as ISeriesApi<"Histogram">).setData(
-      points.map((p) => ({
-        time: asTime(p.t),
-        value: p.buy_vol + p.sell_vol,
-        color: p.buy_vol >= p.sell_vol ? COLORS.volBuy : COLORS.volSell,
-      })) as HistogramData[],
+    totalVolume.setData(
+      points.map((p) => ({ time: asTime(p.t), value: p.buy_vol + p.sell_vol })) as HistogramData[],
+    );
+    buyVolume.setData(
+      points.map((p) => ({ time: asTime(p.t), value: p.buy_vol })) as HistogramData[],
     );
 
     chart.timeScale().fitContent();
