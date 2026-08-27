@@ -154,7 +154,7 @@ reference — copy it and edit. The settings most people touch:
 | `FF_METRICS_INTERVAL_SECONDS` | `60` | Rollup and alert evaluation interval |
 | `FF_SNAPSHOT_INTERVAL_SECONDS` | `3600` | How often the scoreboard is frozen for grading |
 | `FF_BACKFILL_ON_START` | `true` | Build price history on first boot |
-| `FF_BACKFILL_1H_STEPS` | `336` | Hours of hourly history to backfill (14 days) |
+| `FF_BACKFILL_1H_STEPS` | `720` | Hours of bulk history to backfill (30 days) |
 | `FF_BACKFILL_5M_STEPS` | `288` | Five-minute windows to backfill (24 hours) |
 | `FF_RECONSTRUCT_SNAPSHOTS_HOURS` | `96` | Hours of score snapshots to rebuild from stored candles on first boot, so the Score check page has data on day one |
 | `FF_GE_TAX_RATE` | `0.02` | Sale tax rate |

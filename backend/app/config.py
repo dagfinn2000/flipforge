@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # --- Startup backfill -----------------------------------------------------
     # One /1h?timestamp= request covers every item for one hour, so history is
     # built by walking timestamps backwards rather than crawling items.
-    backfill_1h_steps: int = 336   # 14 days
+    backfill_1h_steps: int = 720   # 30 days
     backfill_5m_steps: int = 288   # 24 hours
     backfill_rate_per_sec: float = 5.0
     backfill_on_start: bool = True
