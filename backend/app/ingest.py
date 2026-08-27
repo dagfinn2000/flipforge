@@ -204,6 +204,158 @@ async def backfill() -> None:
     await hub.broadcast("backfill", {"done": 1, "total": 1, "complete": True})
 
 
+# ---------------------------------------------------------------- gap fill ---
+
+# A bucket counts as a hole when it holds no rows at all, or so few that the
+# write must have been truncated. Buckets already asked about are excluded:
+# some windows really are thin (a game update, or the servers being down) and
+# without that record they would be re-requested on every pass, forever.
+GAP_SQL = """
+SELECT b.t
+  FROM unnest($2::timestamptz[]) AS b(t)
+  LEFT JOIN (
+      SELECT ts, count(*) AS n
+        FROM candles
+       WHERE timestep = $1 AND ts = ANY($2::timestamptz[])
+       GROUP BY ts
+  ) present ON present.ts = b.t
+  LEFT JOIN candle_gap_checks checked
+         ON checked.timestep = $1 AND checked.ts = b.t
+ WHERE (present.ts IS NULL OR present.n < $3)
+   AND checked.ts IS NULL
+ ORDER BY b.t DESC
+"""
+
+
+async def _gap_buckets(timestep: str, lookback_seconds: int) -> list[int]:
+    """Every bucket we consider ourselves responsible for.
+
+    Bounded by the oldest data we hold: absence before that is not a gap, it is
+    history that was never fetched, and quietly extending backwards is a
+    different decision from repairing an outage.
+    """
+    step = STEP_SECONDS[timestep]
+    latest = _floor_now(timestep)
+    earliest = await db.fetchval(
+        "SELECT min(ts) FROM candles WHERE timestep = $1", timestep
+    )
+    if earliest is None:
+        return []
+    start = max(int(earliest.timestamp()), latest - lookback_seconds)
+    start = (start // step) * step
+    return list(range(start, latest + step, step)) if start <= latest else []
+
+
+async def find_gaps(timestep: str, lookback_seconds: int, min_rows: int) -> list[int]:
+    """Missing or truncated buckets inside the range already covered."""
+    buckets = await _gap_buckets(timestep, lookback_seconds)
+    if not buckets:
+        return []
+    rows = await db.fetch(GAP_SQL, timestep, [_ts(t) for t in buckets], min_rows)
+    return [int(r["t"].timestamp()) for r in rows]
+
+
+async def fill_gaps(budget: Optional[int] = None) -> dict:
+    """Repair holes in the bulk candle series left by downtime.
+
+    Newest first, because a hole in the last hour degrades the live scoreboard
+    while one from last Tuesday only affects a chart.
+    """
+    if not settings.gapfill_enabled:
+        return {"enabled": False}
+    if await db.get_meta("backfill_done") != "1":
+        # Backfill is still laying down the initial history; everything would
+        # look like a hole and the two jobs would race for the same buckets.
+        return {"skipped": "initial backfill still running"}
+
+    remaining = budget if budget is not None else settings.gapfill_max_requests
+    delay = 1.0 / max(settings.backfill_rate_per_sec, 0.5)
+    # Never repair beyond what retention keeps, or the two jobs undo each other.
+    plan = (
+        ("5m", min(settings.gapfill_5m_hours * 3600, settings.retain_5m_days * 86400)),
+        ("1h", min(settings.gapfill_1h_days * 86400, settings.retain_1h_days * 86400)),
+    )
+
+    report: dict = {"enabled": True, "requests": 0, "rows": 0, "steps": {}}
+    for timestep, lookback in plan:
+        if lookback <= 0 or remaining <= 0:
+            continue
+        gaps = await find_gaps(timestep, lookback, settings.gapfill_min_rows)
+        filled = rows = 0
+        for bucket in gaps[:remaining]:
+            try:
+                written = await store_bulk(timestep, bucket)
+            except Exception as exc:  # noqa: BLE001 - one bad window is not fatal
+                log.warning("gap fill %s @%s failed: %s", timestep, bucket, exc)
+                continue
+            rows += written
+            filled += 1
+            # Record the answer either way, so a genuinely thin window is not
+            # asked about again on every pass.
+            await db.execute(
+                """INSERT INTO candle_gap_checks (timestep, ts, rows_returned)
+                   VALUES ($1, $2, $3)
+                   ON CONFLICT (timestep, ts) DO UPDATE
+                      SET rows_returned = EXCLUDED.rows_returned, checked_at = now()""",
+                timestep, _ts(bucket), written,
+            )
+            await asyncio.sleep(delay)
+        remaining -= filled
+        report["requests"] += filled
+        report["rows"] += rows
+        report["steps"][timestep] = {
+            "gaps_found": len(gaps), "filled": filled, "rows": rows,
+            "remaining_after_pass": max(len(gaps) - filled, 0),
+        }
+
+    await db.set_meta("last_gapfill", str(int(time.time())))
+    if report["requests"]:
+        log.info(
+            "gap fill: %s windows repaired, %s rows recovered",
+            report["requests"], report["rows"],
+        )
+    return report
+
+
+async def gap_report() -> dict:
+    """What is missing right now, without fetching anything."""
+    out = {}
+    for timestep, lookback in (
+        ("5m", min(settings.gapfill_5m_hours * 3600, settings.retain_5m_days * 86400)),
+        ("1h", min(settings.gapfill_1h_days * 86400, settings.retain_1h_days * 86400)),
+    ):
+        gaps = await find_gaps(timestep, lookback, settings.gapfill_min_rows)
+        # Coverage is measured against the range we actually hold, not the full
+        # lookback: a two week old install is not 93% complete over 30 days, it
+        # is complete over two weeks.
+        considered = await _gap_buckets(timestep, lookback)
+        out[timestep] = {
+            "missing_windows": len(gaps),
+            "windows_considered": len(considered),
+            "covering_hours": (
+                (max(considered) - min(considered)) // 3600 if considered else 0
+            ),
+            "lookback_hours": lookback // 3600,
+            "oldest_gap": min(gaps) if gaps else None,
+            "newest_gap": max(gaps) if gaps else None,
+            "coverage": (
+                round(1 - len(gaps) / len(considered), 4) if considered else None
+            ),
+        }
+    checked = await db.fetchval(
+        "SELECT count(*) FROM candle_gap_checks WHERE rows_returned < $1",
+        settings.gapfill_min_rows,
+    )
+    last = await db.get_meta("last_gapfill")
+    return {
+        "enabled": settings.gapfill_enabled,
+        "steps": out,
+        "known_thin_windows": int(checked or 0),
+        "last_run": int(last) if last else None,
+        "max_requests_per_pass": settings.gapfill_max_requests,
+    }
+
+
 # ------------------------------------------------------------------ rollup ---
 
 MID = (
@@ -690,6 +842,10 @@ async def _maintenance_tick() -> None:
         await maintenance.run()
 
 
+async def _gapfill_tick() -> None:
+    await fill_gaps()
+
+
 async def start_background(tasks: list[asyncio.Task]) -> None:
     """Kick off every periodic job. Called once from the app lifespan."""
     await install_sql_helpers()
@@ -721,6 +877,9 @@ async def start_background(tasks: list[asyncio.Task]) -> None:
         # Retention runs a few minutes in, so a container that is restarted
         # often still gets around to cleaning up.
         ("maintenance", settings.maintenance_interval_seconds, _maintenance_tick, 240),
+        # Runs soon after boot, since a restart is exactly when a hole is most
+        # likely, but late enough that any initial backfill has finished.
+        ("gapfill", settings.gapfill_interval_seconds, _gapfill_tick, 600),
     ]
     for name, interval, fn, delay in specs:
         tasks.append(asyncio.create_task(_loop(name, interval, fn, delay), name=f"ff-{name}"))

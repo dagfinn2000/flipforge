@@ -3,9 +3,9 @@ readable and the exemption list is editable at runtime."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
-from .. import db, maintenance, policy, serial
+from .. import db, ingest, maintenance, policy, serial
 from ..config import settings
 from ..models import ExemptionIn
 
@@ -49,6 +49,19 @@ async def cleanup():
     """Run retention now instead of waiting for the daily pass."""
     report = await maintenance.run(reason="manual")
     return {"ok": True, "report": report, "storage": await maintenance.database_size()}
+
+
+@router.get("/gaps")
+async def gaps():
+    """Holes in the bulk candle series, without fetching anything."""
+    return await ingest.gap_report()
+
+
+@router.post("/gaps/fill")
+async def fill_gaps(max_requests: int = Query(None, ge=1, le=2000)):
+    """Repair gaps now instead of waiting for the hourly pass."""
+    report = await ingest.fill_gaps(budget=max_requests)
+    return {"ok": True, "report": report, "status": await ingest.gap_report()}
 
 
 @router.get("/exemptions")

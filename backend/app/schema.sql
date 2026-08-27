@@ -255,6 +255,17 @@ CREATE TABLE IF NOT EXISTS allocator_prefs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Buckets the gap filler has already asked upstream about. Some windows are
+-- genuinely thin -- a game update, or the servers being down -- and without a
+-- record of having checked, those would be re-requested on every pass forever.
+CREATE TABLE IF NOT EXISTS candle_gap_checks (
+    timestep      TEXT NOT NULL,
+    ts            TIMESTAMPTZ NOT NULL,
+    rows_returned INTEGER NOT NULL,
+    checked_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (timestep, ts)
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key        TEXT PRIMARY KEY,
     value      TEXT,

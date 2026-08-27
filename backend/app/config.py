@@ -53,6 +53,21 @@ class Settings(BaseSettings):
     ge_slots_f2p: int = 3
     allocator_max_share: float = 0.35   # no single item over this share of bankroll
 
+    # --- Gap filling ----------------------------------------------------------
+    # The one-time backfill cannot repair an outage: whatever the bulk series
+    # missed while the stack was down stays missing. This repairs holes inside
+    # territory already covered, rather than extending history backwards.
+    gapfill_enabled: bool = True
+    gapfill_interval_seconds: int = 3600
+    # Ceiling on upstream requests per pass, so a long outage is repaired over
+    # several passes instead of in one burst.
+    gapfill_max_requests: int = 250
+    gapfill_5m_hours: int = 48
+    gapfill_1h_days: int = 30
+    # A bulk window covers the whole game: ~1,700 items for 5m and ~3,200 for
+    # 1h. Anything far below that is a truncated write, not a quiet market.
+    gapfill_min_rows: int = 100
+
     # --- Data retention -------------------------------------------------------
     # Every window below is driven by what actually reads the data. Candles are
     # a cache of an upstream API and can always be refetched, so keeping them is

@@ -121,6 +121,7 @@ network fault.
 | `/mapping` — item reference data | daily | 1 |
 | Rollup, scoring, alert evaluation | 60s | 0 (local SQL) |
 | Score snapshot and grading | hourly | 0 (local SQL) |
+| Gap repair after downtime | hourly | 0 when healthy, up to 250 when catching up |
 
 **About 2 requests per minute at steady state, for the entire game.**
 
@@ -291,11 +292,17 @@ can be filtered out.
 **Expected profit assumes both sides fill.** That is the optimistic case. Fill
 time estimates assume you capture about a quarter of one side's flow.
 
-**Downtime leaves permanent gaps.** The history backfill runs once, on first
-boot. If the stack is stopped for a day, that day is missing from the 5-minute
-and hourly candles and nothing backfills it later, which thins out the rollup
-and the validation harness for that period. Opening an item page refetches that
-item's own history, but there is no automatic repair of the bulk series.
+**Downtime is repaired, but not instantly.** The history backfill runs once, so
+an outage would otherwise leave a permanent hole in the bulk candle series. An
+hourly pass finds those holes and refetches them, newest first, capped at 250
+upstream requests per pass — so a long outage heals over several hours rather
+than in one burst. `GET /api/config/gaps` reports current coverage and
+`POST /api/config/gaps/fill` repairs on demand.
+
+It repairs holes inside the range already covered; it will not silently extend
+history further back than the initial backfill reached. Windows that come back
+thin from upstream anyway — a game update, or the servers being down — are
+recorded so they are not re-requested forever.
 
 ---
 
