@@ -128,7 +128,8 @@ lazy deep history when you open an item page, and the result is cached.
 
 ## Configuration
 
-Everything lives in `.env`.
+Everything lives in `.env`. [`.env.example`](.env.example) is the annotated
+reference — copy it and edit. The settings most people touch:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -146,6 +147,13 @@ Everything lives in `.env`.
 | `FF_GE_TAX_CAP` | `5000000` | Maximum tax per item |
 | `FF_GE_SLOTS_MEMBERS` / `_F2P` | `8` / `3` | Grand Exchange slot counts |
 | `FF_ALLOCATOR_MAX_SHARE` | `0.35` | Default diversification cap per item |
+| `FF_SEED_TAX_EXEMPTIONS` | `true` | Seed the exemption table on first boot |
+| `FF_WIKI_BASE` | v2 prices API | Only change to point at a mirror |
+
+Poll intervals (`FF_POLL_5M_SECONDS`, `FF_POLL_1H_SECONDS`,
+`FF_POLL_MAPPING_SECONDS`, `FF_OUTCOME_INTERVAL_SECONDS`,
+`FF_BACKFILL_RATE_PER_SEC`, `FF_SCANNER_MAX_DATA_AGE_SECONDS`) are all
+configurable too and documented in `.env.example`.
 
 There is deliberately **no minimum-taxable-price setting**. That threshold is
 *derived* from the rate: tax floors per item, so it is wherever
