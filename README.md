@@ -233,6 +233,37 @@ not the only one.
 
 ---
 
+## Disk usage and retention
+
+Left alone this database grows by roughly 550,000 candle rows and 380,000 score
+rows a day — on the order of 50GB a year. A daily cleanup pass keeps it bounded
+at around **4–5GB steady state**.
+
+| Data | Kept for | Why that long |
+| --- | --- | --- |
+| `5m` candles | 7 days | The rollup reads the last 70 minutes; the chart shows 24 hours. This is ~85% of all growth |
+| `1h` candles | 90 days | Score grading reaches back 30 days; the validation page allows a 90 day lookback |
+| `6h` / `24h` candles | 400 days | The 3-month and 1-year chart timeframes |
+| Score snapshots | 60 days | Validation page, which displays at most 90 days |
+| Score outcomes | 30 days | Same, and only ever read in aggregate |
+| Alert events | 90 days | The history list |
+
+Every window is an env var (`FF_RETAIN_5M_DAYS` and friends), and setting one to
+`0` disables that rule. `GET /api/config/storage` reports current usage per
+table; `POST /api/config/storage/cleanup` runs the pass immediately rather than
+waiting for the daily one.
+
+**Nothing you created is ever deleted.** Trades, watchlist, alert rules and tax
+exemptions have no retention rule at all. Candles are a cache of an upstream API
+— anything trimmed can be fetched again, and opening an item page repopulates
+its history on demand.
+
+Two mechanics worth knowing. Retention on hypertables drops whole chunks, and
+chunks are seven days wide, so data survives up to a week past its nominal
+window before a chunk becomes wholly expired. And `DELETE` hands space back to
+autovacuum rather than to the filesystem, so the database file may not shrink
+immediately even when millions of rows have gone.
+
 ## Data quality, stated plainly
 
 **Prices are the last real transaction, not a live order book.** A thin item's
@@ -259,6 +290,12 @@ can be filtered out.
 
 **Expected profit assumes both sides fill.** That is the optimistic case. Fill
 time estimates assume you capture about a quarter of one side's flow.
+
+**Downtime leaves permanent gaps.** The history backfill runs once, on first
+boot. If the stack is stopped for a day, that day is missing from the 5-minute
+and hourly candles and nothing backfills it later, which thins out the rollup
+and the validation harness for that period. Opening an item page refetches that
+item's own history, but there is no automatic repair of the bulk series.
 
 ---
 

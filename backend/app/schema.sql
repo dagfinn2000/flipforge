@@ -187,6 +187,15 @@ CREATE TABLE IF NOT EXISTS score_outcomes (
     computed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (item_id, ts, horizon)
 );
+-- A hypertable so retention is a chunk drop rather than a DELETE of millions
+-- of rows: this is the second largest table and the one that grows fastest
+-- after 5-minute candles.
+SELECT create_hypertable(
+    'score_outcomes', 'ts',
+    chunk_time_interval => INTERVAL '7 days',
+    if_not_exists => TRUE,
+    migrate_data => TRUE
+);
 CREATE INDEX IF NOT EXISTS score_outcomes_ts ON score_outcomes (ts DESC);
 
 -- ------------------------------------------------------------------- user ----

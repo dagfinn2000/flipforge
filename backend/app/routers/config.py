@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from .. import db, policy, serial
+from .. import db, maintenance, policy, serial
 from ..config import settings
 from ..models import ExemptionIn
 
@@ -29,7 +29,26 @@ async def read_config():
             "members": settings.ge_slots_members,
             "free_to_play": settings.ge_slots_f2p,
         },
+        "retention": maintenance.policy(),
     }
+
+
+@router.get("/storage")
+async def storage():
+    """What the database is actually using, and what retention will trim."""
+    last = await db.get_meta("last_maintenance")
+    return {
+        **await maintenance.database_size(),
+        "retention": maintenance.policy(),
+        "last_maintenance": int(last) if last else None,
+    }
+
+
+@router.post("/storage/cleanup")
+async def cleanup():
+    """Run retention now instead of waiting for the daily pass."""
+    report = await maintenance.run(reason="manual")
+    return {"ok": True, "report": report, "storage": await maintenance.database_size()}
 
 
 @router.get("/exemptions")

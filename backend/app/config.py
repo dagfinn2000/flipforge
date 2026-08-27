@@ -53,6 +53,29 @@ class Settings(BaseSettings):
     ge_slots_f2p: int = 3
     allocator_max_share: float = 0.35   # no single item over this share of bankroll
 
+    # --- Data retention -------------------------------------------------------
+    # Every window below is driven by what actually reads the data. Candles are
+    # a cache of an upstream API and can always be refetched, so keeping them is
+    # a convenience rather than a duty; the app's own score history cannot be
+    # refetched and is kept longer relative to what reads it.
+    #
+    # Set any of these to 0 to disable that particular cleanup.
+    maintenance_interval_seconds: int = 86400   # daily
+
+    # 5-minute candles: the rollup reads the last 70 minutes, the chart shows
+    # 24 hours. This is ~85% of all data growth, so it is the one that matters.
+    retain_5m_days: int = 7
+    # Hourly candles: grading reaches back 30 days, the validation page allows a
+    # 90 day lookback.
+    retain_1h_days: int = 90
+    # Backstop for everything else in the table, chiefly the 6h and 24h candles
+    # behind the long chart timeframes.
+    retain_candles_days: int = 400
+
+    retain_snapshots_days: int = 60
+    retain_outcomes_days: int = 30
+    retain_alert_events_days: int = 90
+
     # --- Scanner defaults -----------------------------------------------------
     scanner_max_data_age_seconds: int = 3600
 

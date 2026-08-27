@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Optional
 
-from . import db, indicators, money, policy, scoring
+from . import db, indicators, maintenance, money, policy, scoring
 from .config import settings
 from .hub import hub
 from .wiki import LOOKBACK_FOR_TIMESTEP, STEP_SECONDS, client
@@ -685,6 +685,11 @@ async def _validation_tick() -> None:
     await grade_outcomes()
 
 
+async def _maintenance_tick() -> None:
+    if settings.maintenance_interval_seconds > 0:
+        await maintenance.run()
+
+
 async def start_background(tasks: list[asyncio.Task]) -> None:
     """Kick off every periodic job. Called once from the app lifespan."""
     await install_sql_helpers()
@@ -713,6 +718,9 @@ async def start_background(tasks: list[asyncio.Task]) -> None:
         ("metrics", settings.metrics_interval_seconds, _metrics_tick, 20),
         ("validation", settings.snapshot_interval_seconds, _validation_tick, 120),
         ("grading", settings.outcome_interval_seconds, grade_outcomes, 300),
+        # Retention runs a few minutes in, so a container that is restarted
+        # often still gets around to cleaning up.
+        ("maintenance", settings.maintenance_interval_seconds, _maintenance_tick, 240),
     ]
     for name, interval, fn, delay in specs:
         tasks.append(asyncio.create_task(_loop(name, interval, fn, delay), name=f"ff-{name}"))
