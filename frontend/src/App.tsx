@@ -7,6 +7,8 @@ import ItemPage from "./pages/Item";
 import Watchlist from "./pages/Watchlist";
 import Portfolio from "./pages/Portfolio";
 import Alerts from "./pages/Alerts";
+import Allocator from "./pages/Allocator";
+import Validation from "./pages/Validation";
 
 export default function App() {
   return (
@@ -15,6 +17,8 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/scanner" element={<Scanner />} />
         <Route path="/item/:id" element={<ItemPage />} />
+        <Route path="/allocator" element={<Allocator />} />
+        <Route path="/validation" element={<Validation />} />
         <Route path="/watchlist" element={<Watchlist />} />
         <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/alerts" element={<Alerts />} />

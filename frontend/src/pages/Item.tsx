@@ -20,6 +20,16 @@ const OVERLAY_OPTIONS: { id: Overlay; label: string }[] = [
   { id: "bollinger", label: "Bollinger" },
 ];
 
+/** What each score term actually measures, shown on hover. */
+const COMPONENT_HELP: Record<string, string> = {
+  roi: "Post-tax return on the coins tied up, saturating so 500% cannot dwarf 5%",
+  profit: "Absolute gp per 4 hour cycle. This is what stops a 1gp feather spread outranking a real trade",
+  liquidity: "Units traded on both sides over 24 hours",
+  stability: "How steady the margin is: its standard deviation over its own mean",
+  fill: "Estimated time to buy a full limit at current flow, against the 4 hour window",
+  freshness: "Age of the last real trade behind this quote",
+};
+
 function Row({ k, v, hint }: { k: string; v: React.ReactNode; hint?: string }) {
   return (
     <div className="kv" title={hint}>
@@ -43,6 +53,7 @@ export default function ItemPage() {
   const [alertMetric, setAlertMetric] = useState("margin");
   const [alertOp, setAlertOp] = useState("above");
   const [alertValue, setAlertValue] = useState("");
+  const [alertBand, setAlertBand] = useState("");
 
   const item = useQuery({ queryKey: ["item", itemId], queryFn: () => api.item(itemId) });
   const series = useQuery({
@@ -87,9 +98,13 @@ export default function ItemPage() {
         metric: alertMetric,
         op: alertOp,
         threshold: alertMetric === "roi" ? Number(alertValue) / 100 : Number(alertValue),
+        hysteresis: alertBand
+          ? (alertMetric === "roi" ? Number(alertBand) / 100 : Number(alertBand))
+          : 0,
       }),
     onSuccess: () => {
       setAlertValue("");
+      setAlertBand("");
       queryClient.invalidateQueries({ queryKey: ["alerts"] });
     },
   });
@@ -128,7 +143,15 @@ export default function ItemPage() {
         </div>
       </div>
 
-      <div className="grid cols-4" style={{ marginBottom: 16 }}>
+      {d?.crossed && (
+        <div className="banner">
+          Crossed quote: the instant-sell price is above the instant-buy price. The last two
+          trades landed out of order, so this margin is genuinely negative rather than an
+          error. It is shown as-is rather than clamped.
+        </div>
+      )}
+
+      <div className="grid cols-3" style={{ marginBottom: 16 }}>
         <div className="card stat">
           <div className="label">Buy at (instant sell)</div>
           <div className="value">{gp(d?.low)}</div>
@@ -144,6 +167,15 @@ export default function ItemPage() {
           <div className={`value ${tone(d?.margin)}`}>{gp(d?.margin, { sign: true })}</div>
           <div className="foot">
             {pct(d?.roi)} ROI · {gp(d?.tax)} gp tax per unit
+          </div>
+        </div>
+        <div className="card stat">
+          <div className="label">Breakeven sell</div>
+          <div className="value">{gp(d?.breakeven_sell)}</div>
+          <div className="foot">
+            {d?.breakeven_sell && d?.low
+              ? `${gp(d.breakeven_sell - d.low, { sign: true })} above your buy, or you lose money`
+              : "lowest sell that covers the buy after tax"}
           </div>
         </div>
         <div className="card stat">
@@ -221,20 +253,24 @@ export default function ItemPage() {
           <div className="card-body">
             {breakdown ? (
               <>
-                {(["roi", "profit", "volume", "stability", "fill", "freshness"] as const).map((key) => (
-                  <div className="meter-row" key={key}>
-                    <span className="m-label">{key}</span>
+                {breakdown.components.map((c) => (
+                  <div className="meter-row" key={c.key} title={COMPONENT_HELP[c.key]}>
+                    <span className="m-label">{c.key}</span>
                     <span className="meter">
-                      <span style={{ width: `${Math.round((breakdown[key] ?? 0) * 100)}%` }} />
+                      <span style={{ width: `${Math.round(c.value * 100)}%` }} />
                     </span>
                     <span className="m-value">
-                      {(breakdown[key] * 100).toFixed(0)}
+                      +{c.contribution.toFixed(1)}
                       <span style={{ color: "var(--text-faint)" }}>
-                        {" ×"}{breakdown.weights[key]?.toFixed(2)}
+                        {" "}/{(c.weight * 100).toFixed(0)}
                       </span>
                     </span>
                   </div>
                 ))}
+                <div className="kv" style={{ marginTop: 8, borderTop: "1px solid var(--line)" }}>
+                  <span className="k">total</span>
+                  <span className="v gold">{breakdown.total.toFixed(1)} / 100</span>
+                </div>
                 {breakdown.notes.length > 0 && (
                   <ul className="note-list">
                     {breakdown.notes.map((n) => <li key={n}>{n}</li>)}
@@ -251,6 +287,21 @@ export default function ItemPage() {
           <div className="card-head"><h2>Market depth</h2></div>
           <div className="card-body">
             <Row k="Buy limit (4h)" v={d?.buy_limit ? num(d.buy_limit) : "none"} />
+            {d?.limit_window?.limit != null && (
+              <Row
+                k="Limit remaining"
+                v={
+                  <span className={d.limit_window.remaining === 0 ? "down" : "up"}>
+                    {num(d.limit_window.remaining)} of {num(d.limit_window.limit)}
+                  </span>
+                }
+                hint={
+                  d.limit_window.resets_at
+                    ? `Rolling window: your oldest logged buy ages out ${new Date(d.limit_window.resets_at * 1000).toLocaleTimeString()}`
+                    : "Rolling 4 hour window, counted from your logged buys"
+                }
+              />
+            )}
             <Row k="Volume 1h" v={gpShort(d?.vol_1h)} />
             <Row k="Volume 24h" v={gpShort(d?.vol_24h)} />
             <Row
@@ -259,9 +310,18 @@ export default function ItemPage() {
               hint="Assumes you capture about a quarter of one side's flow"
             />
             <Row
-              k="Margin stability"
-              v={d?.margin_stability == null ? "--" : pct(d.margin_stability, 0, false)}
-              hint="Share of the last 24 hours where this flip was profitable"
+              k="Margin steadiness"
+              v={
+                d?.margin_cv == null
+                  ? "--"
+                  : `${d.margin_cv < 0.35 ? "firm" : d.margin_cv < 1 ? "loose" : d.margin_cv < 2 ? "jumpy" : "flicker"} (${d.margin_cv.toFixed(2)})`
+              }
+              hint="Standard deviation of the post-tax spread over its own mean. A margin that only exists in flickers scores badly here."
+            />
+            <Row
+              k="Profitable 24h"
+              v={d?.margin_positive_24h == null ? "--" : pct(d.margin_positive_24h, 0, false)}
+              hint="Share of the last 24 hours where this flip had a post-tax edge at all"
             />
             <Row k="Volatility 24h" v={d?.volatility_24h == null ? "--" : pct(d.volatility_24h, 2, false)} />
             <Row k="RSI" v={d?.rsi_14 == null ? "--" : d.rsi_14.toFixed(1)} />
@@ -314,6 +374,11 @@ export default function ItemPage() {
                   }
                 />
                 <Row k="ROI" v={pct(calc.data.roi as number)} />
+                <Row
+                  k="Breakeven sell"
+                  v={`${gp(calc.data.breakeven_sell as number)} gp`}
+                  hint="Selling at your buy price is a loss; this is the lowest price that is not"
+                />
                 {Boolean(calc.data.over_limit) && (
                   <div className="banner" style={{ marginTop: 10, marginBottom: 0 }}>
                     Quantity exceeds the {num(calc.data.buy_limit as number)} unit buy limit; this
@@ -359,6 +424,17 @@ export default function ItemPage() {
                 value={alertValue}
                 onChange={(e) => setAlertValue(e.target.value)}
                 placeholder={alertMetric === "roi" ? "5" : "1000"}
+              />
+            </div>
+            <div className="field">
+              <label title="The value must retreat this far past the threshold before the alert can fire again. Without it, a value hovering on the line fires every minute.">
+                Reset band
+              </label>
+              <input
+                type="number"
+                value={alertBand}
+                onChange={(e) => setAlertBand(e.target.value)}
+                placeholder="0"
               />
             </div>
             <button

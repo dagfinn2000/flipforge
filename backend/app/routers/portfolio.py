@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import defaultdict
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from .. import analytics, db, serial
+from .. import db, money, policy, serial
 from ..models import TradeIn
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
@@ -15,8 +15,7 @@ router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
 @router.get("/trades")
 async def trades(item_id: Optional[int] = None, limit: int = Query(200, ge=1, le=1000)):
-    args: list = []
-    where = ""
+    args, where = [], ""
     if item_id is not None:
         args.append(item_id)
         where = "WHERE t.item_id = $1"
@@ -31,15 +30,13 @@ async def trades(item_id: Optional[int] = None, limit: int = Query(200, ge=1, le
 
 @router.post("/trades")
 async def add_trade(body: TradeIn):
-    record = await db.fetchrow("SELECT tax_exempt FROM items WHERE id = $1", body.item_id)
-    if record is None:
+    if not await db.fetchval("SELECT 1 FROM items WHERE id = $1", body.item_id):
         raise HTTPException(404, "unknown item")
-    # Tax is charged on sales only, and is recorded at execution time so later
-    # rule changes do not rewrite history.
+    # Tax is recorded at execution time so a later rule change cannot rewrite
+    # history: what you actually paid stays what you actually paid.
     tax = (
-        analytics.sale_tax(body.price, record["tax_exempt"]) * body.quantity
-        if body.side == "sell"
-        else 0
+        money.sale_tax(body.price, policy.current(), body.item_id) * body.quantity
+        if body.side == "sell" else 0
     )
     trade_id = await db.fetchval(
         """INSERT INTO trades (item_id, side, quantity, price, tax_paid, note, executed_at)
@@ -59,83 +56,51 @@ async def delete_trade(trade_id: int):
 async def portfolio():
     """Match sells against buys FIFO to split realised from open exposure."""
     records = await db.fetch(
-        """SELECT t.item_id, t.side, t.quantity, t.price, t.tax_paid, t.executed_at,
-                  i.name, i.icon, i.tax_exempt, i.buy_limit,
-                  m.high, m.low, m.margin, m.price_change_24h
+        """SELECT t.item_id, t.side, t.quantity, t.price, t.executed_at,
+                  i.name, i.icon, i.buy_limit, m.high, m.low, m.price_change_24h
              FROM trades t
              JOIN items i ON i.id = t.item_id
              LEFT JOIN metrics m ON m.item_id = t.item_id
             ORDER BY t.executed_at, t.id"""
     )
 
-    lots: dict[int, deque] = defaultdict(deque)
-    realised: dict[int, int] = defaultdict(int)
-    tax_paid: dict[int, int] = defaultdict(int)
-    sold_qty: dict[int, int] = defaultdict(int)
-    bought_qty: dict[int, int] = defaultdict(int)
-    unmatched: dict[int, int] = defaultdict(int)
+    tax = policy.current()
+    fills: dict[int, list[money.Fill]] = defaultdict(list)
     meta: dict[int, dict] = {}
-
     for t in records:
-        item_id = t["item_id"]
-        meta[item_id] = {
-            "item_id": item_id,
-            "name": t["name"],
-            "icon_url": serial.icon_url(t["icon"]),
-            "high": t["high"],
-            "low": t["low"],
-            "tax_exempt": t["tax_exempt"],
-            "price_change_24h": t["price_change_24h"],
+        fills[t["item_id"]].append(
+            money.Fill(t["side"], int(t["quantity"]), int(t["price"]),
+                       int(t["executed_at"].timestamp()))
+        )
+        meta[t["item_id"]] = {
+            "item_id": t["item_id"], "name": t["name"],
+            "icon_url": serial.icon_url(t["icon"]), "high": t["high"], "low": t["low"],
+            "price_change_24h": serial.jsonable(t["price_change_24h"]),
         }
-        if t["side"] == "buy":
-            lots[item_id].append([t["quantity"], t["price"]])
-            bought_qty[item_id] += t["quantity"]
-            continue
-
-        remaining = t["quantity"]
-        sold_qty[item_id] += t["quantity"]
-        # Tax was stored for the whole sale; spread it per unit for matching.
-        unit_net = t["price"] - (t["tax_paid"] // t["quantity"] if t["quantity"] else 0)
-        while remaining > 0 and lots[item_id]:
-            lot = lots[item_id][0]
-            take = min(remaining, lot[0])
-            realised[item_id] += (unit_net - lot[1]) * take
-            lot[0] -= take
-            remaining -= take
-            if lot[0] == 0:
-                lots[item_id].popleft()
-        if remaining > 0:
-            # Sold more than the ledger shows buying; count revenue with no basis.
-            realised[item_id] += unit_net * remaining
-            unmatched[item_id] += remaining
-        tax_paid[item_id] += t["tax_paid"]
 
     positions = []
-    for item_id, info in meta.items():
-        open_qty = sum(lot[0] for lot in lots[item_id])
-        cost_basis = sum(lot[0] * lot[1] for lot in lots[item_id])
-        avg_cost = cost_basis / open_qty if open_qty else None
-        mark = info["high"]
-        unrealised = None
-        if open_qty and mark:
-            exit_net = analytics.net_sale(mark, info["tax_exempt"])
-            unrealised = exit_net * open_qty - cost_basis
-        positions.append(
-            {
-                **info,
-                "open_quantity": open_qty,
-                "cost_basis": cost_basis,
-                "avg_cost": avg_cost,
-                "market_value": (mark or 0) * open_qty,
-                "realised": realised[item_id],
-                "unrealised": unrealised,
-                "total": realised[item_id] + (unrealised or 0),
-                "tax_paid": tax_paid[item_id],
-                "bought_quantity": bought_qty[item_id],
-                "sold_quantity": sold_qty[item_id],
-                "unmatched_sales": unmatched[item_id],
-            }
-        )
+    for item_id, item_fills in fills.items():
+        result = money.match_fifo(item_fills, tax, item_id)
+        mark = meta[item_id]["high"]
+        unreal = money.unrealised(result, mark, tax, item_id)
+        avg = result.average_cost
+        positions.append({
+            **meta[item_id],
+            "open_quantity": result.open_quantity,
+            "cost_basis": result.cost_basis,
+            "avg_cost": float(avg) if avg is not None else None,
+            "market_value": (mark or 0) * result.open_quantity,
+            "realised": result.realised,
+            "unrealised": unreal,
+            "total": result.realised + (unreal or 0),
+            "tax_paid": result.tax_paid,
+            "bought_quantity": result.bought,
+            "sold_quantity": result.sold,
+            "unmatched_sales": result.unmatched_sales,
+            "breakeven_sell": (
+                money.breakeven_sell(int(avg), tax, item_id) if avg else None
+            ),
+        })
     positions.sort(key=lambda p: p["total"], reverse=True)
 
     totals = {

@@ -5,8 +5,8 @@ import { clsx, duration, gp, gpShort, num, pct, tone } from "../lib/format";
 
 export type ColumnKey =
   | "score" | "buy" | "sell" | "margin" | "roi" | "profit" | "vol24" | "vol1h"
-  | "change1h" | "change24h" | "change7d" | "limit" | "rsi" | "fill" | "stability"
-  | "volatility" | "signal" | "age" | "affordable";
+  | "change1h" | "change24h" | "change7d" | "limit" | "rsi" | "fill" | "steadiness"
+  | "breakeven" | "volatility" | "signal" | "age" | "affordable";
 
 interface Column {
   key: ColumnKey;
@@ -39,8 +39,23 @@ export const COLUMNS: Record<ColumnKey, Column> = {
     render: (r) => <span className="mono">{gp(r.high)}</span>,
   },
   margin: {
-    key: "margin", label: "Margin", sortKey: "margin", title: "Profit per unit after tax",
-    render: (r) => <span className={clsx("mono", tone(r.margin))}>{gp(r.margin, { sign: true })}</span>,
+    key: "margin", label: "Margin", sortKey: "margin",
+    title: "Profit per unit AFTER Grand Exchange tax. This app never shows a pre-tax margin.",
+    render: (r) => (
+      <span className={clsx("mono", tone(r.margin))}>
+        {gp(r.margin, { sign: true })}
+        {r.crossed && (
+          <span className="tag crossed" title="Instant-sell is above instant-buy: the last two trades landed out of order. Genuine feed condition, not an error.">
+            crossed
+          </span>
+        )}
+      </span>
+    ),
+  },
+  breakeven: {
+    key: "breakeven", label: "Breakeven",
+    title: "Lowest sell price that still covers your buy after tax. It is never equal to the buy price.",
+    render: (r) => <span className="mono">{gp(r.breakeven_sell)}</span>,
   },
   roi: {
     key: "roi", label: "ROI", sortKey: "roi", title: "Post-tax return on the coins tied up",
@@ -90,14 +105,22 @@ export const COLUMNS: Record<ColumnKey, Column> = {
     key: "fill", label: "Fill", title: "Estimated time to buy a full limit at current flow",
     render: (r) => <span className="mono">{duration(r.est_fill_hours)}</span>,
   },
-  stability: {
-    key: "stability", label: "Stable",
-    title: "Share of the last 24 hours where this flip was profitable",
-    render: (r) => (
-      <span className={clsx("mono", (r.margin_stability ?? 0) > 0.7 ? "up" : (r.margin_stability ?? 0) < 0.4 ? "down" : "flat")}>
-        {r.margin_stability == null ? "--" : `${(r.margin_stability * 100).toFixed(0)}%`}
-      </span>
-    ),
+  steadiness: {
+    key: "steadiness", label: "Steady",
+    title: "Margin variability: the spread's standard deviation over its own mean. "
+      + "Low means a real level; high means the margin only exists in flickers.",
+    render: (r) => {
+      const cv = r.margin_cv;
+      const label = cv == null ? "--" : cv < 0.35 ? "firm" : cv < 1 ? "loose" : cv < 2 ? "jumpy" : "flicker";
+      return (
+        <span
+          className={clsx("mono", cv == null ? "flat" : cv < 0.35 ? "up" : cv < 2 ? "flat" : "down")}
+          title={cv == null ? undefined : `coefficient of variation ${cv.toFixed(2)}`}
+        >
+          {label}
+        </span>
+      );
+    },
   },
   volatility: {
     key: "volatility", label: "Vol σ", sortKey: "volatility",

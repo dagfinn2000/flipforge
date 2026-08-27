@@ -1,171 +1,264 @@
 # FlipForge
 
-Self-hosted, real-time market intelligence for Old School RuneScape. Every item,
-every price, every five minutes -- with the maths that actually decides whether a
-flip is worth doing.
+Self-hosted, real-time market intelligence for Old School RuneScape. Every
+tradeable item, refreshed continuously, with the post-tax maths that actually
+decides whether a flip is worth doing.
 
 ```bash
-git clone <this repo> && cd flipforge
-cp .env.example .env      # set FF_CONTACT to your email or Discord handle
+git clone https://github.com/dagfinn2000/flipforge.git && cd flipforge
+cp .env.example .env          # set FF_CONTACT — the app will not start without it
 docker compose up -d
 ```
 
-Open <http://localhost:8090>. First start pulls the item mapping, current prices
-and two weeks of history; the UI is usable within seconds and fills in as the
-backfill runs.
+Open <http://localhost:8090>. No cloud services, no API keys, no accounts.
 
 ---
 
-## What it does that a price site doesn't
+## The one thing this app will not do
 
-**Every margin is after tax.** The Grand Exchange takes 2% of each sale, rounded
-down per item, capped per item, and waived on items under 100gp and on the
-exemption list (bonds, spade, hammer, ...). A whip with a 7k spread is a *losing*
-flip once 16k of tax comes off. FlipForge never shows you a pre-tax margin.
+**It will never show you a pre-tax margin.** Not as a secondary column, not in a
+tooltip, not anywhere.
 
-**A ranking you can audit.** Every item gets a 0-100 flip score built from six
-bounded components -- post-tax ROI, absolute gp per cycle, liquidity, margin
-stability, fill time and quote freshness. The item page shows each component,
-its weight and its contribution, so you can see *why* something ranked where it
-did. ROI alone is how a 1gp spread on a 2gp feather becomes a "50% return"; the
-profit term is what stops that outranking a real trade.
+An abyssal whip with a 21,000gp raw spread is a *losing* flip once the 2% sale
+tax lands. A price site that shows you the spread is telling you something true
+and useless. Every margin, ROI, score, allocation and portfolio figure here is
+net of tax, and the tax rules are configuration rather than constants because
+Jagex has already changed them once.
 
-**The real two-sided market.** The chart plots what impatient buyers pay and what
-impatient sellers accept as two separate lines, with the gap between them being
-your gross margin, and volume on each side underneath. That is the picture a
-flipper needs. Averaged single-line price charts hide exactly the thing you are
-trading.
-
-**Fill time, not just margin.** A 500k margin is worthless if the item trades
-twice a day. Every row estimates how long a full 4-hour buy limit takes to fill
-at current flow, and caps "profit per cycle" at what you could realistically move.
-
-**Anomaly detection.** Items whose price *or* volume has broken out of their own
-recent normal, separated into breakouts (price and volume moved together) and
-thin moves (price moved on no volume -- usually someone pushing a shallow book).
-
-**Tax-aware portfolio.** Log your trades; sells are matched against your oldest
-open buys FIFO, so realised profit reflects what you actually paid, with tax
-recorded at the moment of sale.
-
-**No account, no paywall, no rate limits.** It is your server and your database.
-The full JSON API is documented at `/api/docs` and is yours to script against.
+Related, and the single most common flipping mistake: **selling at your buy price
+loses money.** Buy at 1,000,000 and sell at 1,000,000 and you are down 20,000.
+Every item page shows the breakeven sell price — the lowest price that actually
+covers your cost.
 
 ---
 
-## The screens
+## What is here
 
-| Screen | What it is for |
+| Screen | What it answers |
 | --- | --- |
-| **Dashboard** | Market pulse: best flips right now, biggest movers over 1h/24h/7d, unusual activity |
-| **Flip scanner** | Every tradeable item with a dozen filters and presets (balanced, high volume, big ticket, low capital, oversold). Enter your capital and it shows what you can actually afford, capped by the buy limit |
-| **Item page** | Price history with SMA/VWAP/Bollinger overlays, score breakdown, market depth, a profit calculator and one-click alerts |
-| **Watchlist** | Your tracked items, ranked live |
-| **Portfolio** | FIFO positions, realised and unrealised P&L, tax paid |
-| **Alerts** | Threshold rules on margin, ROI, price, volume, score or z-score. Fire as live toasts anywhere in the app |
+| **Dashboard** | What is the market doing right now: best flips, movers over 1h/24h/7d, unusual activity, total volume |
+| **Flip scanner** | Every item, filterable on margin, ROI, volume, buy limit, price band, score, quote age, fill time and margin steadiness. Enter your capital and it shows only what you can afford, quantity capped by the buy limit |
+| **Slot allocator** | Given *this* bankroll and *these* slots, what should I actually buy — the question a ranked list cannot answer |
+| **Item page** | Two-sided price chart, auditable score breakdown, market depth, rolling buy-limit state, profit calculator, one-click alerts |
+| **Portfolio** | FIFO cost basis, realised and unrealised P&L, breakeven per position, total tax paid |
+| **Alerts** | Threshold rules with hysteresis and cooldown, delivered live over a websocket |
+| **Score check** | Whether the flip score actually predicted anything, measured against what the market did |
 
-Press <kbd>Cmd/Ctrl</kbd>+<kbd>K</kbd> or <kbd>/</kbd> anywhere to search items.
+<kbd>Cmd/Ctrl</kbd>+<kbd>K</kbd> or <kbd>/</kbd> opens item search from anywhere.
+
+### The slot allocator
+
+You have eight Grand Exchange slots (three on free-to-play) and a fixed bankroll.
+The best single flip is rarely the best use of all eight, and buy limits mean the
+top-ranked item usually cannot absorb your capital.
+
+Formulated as a bounded knapsack with a slot constraint. One structural property
+makes it tractable: profit and capital are both linear in quantity for a given
+item, so the return per coin is exactly its ROI, and there is never a reason to
+part-fund an item while a higher-ROI one is still short. An optimal plan
+therefore funds every chosen item to its cap except at most one. That reduces
+the problem to choosing which items get slots, solved by a greedy seed on the
+real objective followed by local swap improvement.
+
+It is a heuristic, not a proof of optimality, and it is labelled as one. It
+respects buy limits, per-item capital, and a diversification cap so it will not
+put everything into one thin item. Pin an item to force it in, exclude one to
+rule it out, and re-solve.
+
+### The flip score, and checking whether it works
+
+Six bounded components, weighted:
+
+| Component | Weight | What it measures |
+| --- | --- | --- |
+| Profit | 0.26 | Absolute gp per 4h cycle |
+| ROI | 0.22 | Post-tax return on capital, saturating |
+| Liquidity | 0.18 | Units traded, both sides, over 24h |
+| Stability | 0.16 | Spread's standard deviation over its own mean |
+| Fill | 0.10 | Time to fill a full buy limit at current flow |
+| Freshness | 0.08 | Age of the last real trade |
+
+Every component is bounded so no single term can run away. The profit term is
+what stops a 1gp spread on a 2gp feather — a genuine 50% ROI — from outranking a
+real trade. All weights and saturation bands are named constants at the top of
+[`backend/app/scoring.py`](backend/app/scoring.py) so they can be argued with and
+changed in one place. Each item's per-component value, weight and contribution
+are stored and rendered on its page, so a ranking can always be audited.
+
+And then the part most tools skip: **the score is graded.** Every hour the
+scoreboard is frozen. Once a holding period elapses, each frozen row is checked
+against what the market actually did — buy at the instant-sell price recorded
+then, exit at the item's average instant-buy price one period later, minus tax.
+The Score check page shows realised return by score decile.
+
+Judge it on **gp per cycle, not per unit**: a 1gp margin against a 30,000 buy
+limit beats a 70k margin against a limit of 8, and per-unit figures hide that
+completely. This is not a hypothetical — grading per unit made the model look
+flat, and the error was in the measurement.
 
 ---
 
-## How the data gets there
+## Data source and request budget
 
-The source is the [OSRS Wiki real-time prices API](https://prices.runescape.wiki/),
-the same feed the in-game-adjacent tools use. It is free and unauthenticated; the
-one rule is that clients identify themselves, which is what `FF_CONTACT` is for.
+The [OSRS Wiki real-time prices API](https://prices.runescape.wiki/), v2. Free
+and unauthenticated. The one rule is a descriptive User-Agent with a contact,
+which is what `FF_CONTACT` is for — the wiki rejects default agents outright
+(`python-requests`, `curl/*`, `Java/*` and friends get a 400), so the app refuses
+to boot without it rather than emitting a wall of failures that looks like a
+network fault.
 
-| Job | Cadence | Cost |
+| Job | Cadence | Requests |
 | --- | --- | --- |
-| Latest prices, all items | 45s | 1 request |
-| 5-minute averages, all items | 5 min | 1 request |
-| Hourly averages, all items | 15 min | 1 request |
-| Item mapping | daily | 1 request |
-| Rollup + alert evaluation | 60s | 0 (local SQL) |
+| `/latest` — every item's current quote | 45s | 1 |
+| `/5m` — five-minute averages, every item | 5 min | 1 |
+| `/1h` — hourly averages, every item | 15 min | 1 |
+| `/mapping` — item reference data | daily | 1 |
+| Rollup, scoring, alert evaluation | 60s | 0 (local SQL) |
+| Score snapshot and grading | hourly | 0 (local SQL) |
 
-History is backfilled by walking the *bulk* endpoints backwards -- one request
-covers every item for one timestamp, so two weeks of hourly history for the whole
-game costs 336 requests, once, ever. Per-item deep history (up to a year) is
-fetched lazily the first time you open an item, then cached.
+**About 2 requests per minute at steady state, for the entire game.**
 
-That is roughly **2 requests a minute** at steady state for the entire game.
+The id-less bulk endpoints return every item in one response. Nothing here ever
+loops `/latest?id=` over the item list. History is backfilled by walking
+`/1h?timestamp=` backwards in 3600s steps, so two weeks of hourly candles for all
+~4,000 items costs 336 requests, once. Per-item `/timeseries` is used only for
+lazy deep history when you open an item page, and the result is cached.
 
 ---
 
 ## Configuration
 
-Everything lives in `.env`. The values that matter:
+Everything lives in `.env`.
 
-| Variable | Default | Notes |
+| Variable | Default | Meaning |
 | --- | --- | --- |
-| `FF_CONTACT` | *unset* | **Set this.** Your email or Discord handle, sent as the User-Agent |
-| `FF_PORT` | `8090` | Port the UI is served on |
-| `FF_POLL_LATEST_SECONDS` | `45` | How often to refresh every price |
-| `FF_BACKFILL_1H_STEPS` | `336` | Hours of history to pull on first start |
+| `FF_CONTACT` | *(none)* | **Required.** Email or Discord handle, sent in the User-Agent. The API exits at startup without it |
+| `FF_PORT` | `8090` | Host port for the web UI |
+| `POSTGRES_USER` / `_PASSWORD` / `_DB` | `flipforge` | Database credentials |
+| `FF_POLL_LATEST_SECONDS` | `45` | Full price refresh interval |
+| `FF_METRICS_INTERVAL_SECONDS` | `60` | Rollup and alert evaluation interval |
+| `FF_SNAPSHOT_INTERVAL_SECONDS` | `3600` | How often the scoreboard is frozen for grading |
+| `FF_BACKFILL_ON_START` | `true` | Build price history on first boot |
+| `FF_BACKFILL_1H_STEPS` | `336` | Hours of hourly history to backfill (14 days) |
+| `FF_BACKFILL_5M_STEPS` | `288` | Five-minute windows to backfill (24 hours) |
+| `FF_RECONSTRUCT_SNAPSHOTS_HOURS` | `96` | Hours of score snapshots to rebuild from stored candles on first boot, so the Score check page has data on day one |
 | `FF_GE_TAX_RATE` | `0.02` | Sale tax rate |
-| `FF_GE_TAX_CAP` | `5000000` | Max tax per item |
-| `FF_GE_TAX_MIN_PRICE` | `100` | Sales below this are untaxed |
+| `FF_GE_TAX_CAP` | `5000000` | Maximum tax per item |
+| `FF_GE_SLOTS_MEMBERS` / `_F2P` | `8` / `3` | Grand Exchange slot counts |
+| `FF_ALLOCATOR_MAX_SHARE` | `0.35` | Default diversification cap per item |
 
-The tax settings are configuration rather than constants on purpose: Jagex has
-changed the rules before. If an update lands, change the number here and every
-margin, ROI, score and portfolio figure in the app follows immediately -- no code
-change, no redeploy of anything but the API container.
+There is deliberately **no minimum-taxable-price setting**. That threshold is
+*derived* from the rate: tax floors per item, so it is wherever
+`floor(price × rate)` first reaches 1 — 50gp at 2%. The widely repeated "under
+100gp is untaxed" is a leftover from the 1% era and under-reports tax on
+everything between 50 and 99gp.
+
+The exemption list (bonds, spade, hammer, gloves of silence, …) is a seeded
+database table, not a constant. Read it at `/api/config/exemptions` and edit it
+through the same endpoint; the policy reloads immediately.
 
 ---
 
-## Development
+## Stack
+
+FastAPI + Python 3.12, PostgreSQL with TimescaleDB (candles and score snapshots
+are hypertables), React + TypeScript + Vite, lightweight-charts, nginx. Three
+containers.
+
+Money is `BIGINT` and `NUMERIC` end to end — prices exceed 32-bit and averages
+carry decimals. The tax module works in `Decimal`, never `float`: binary floats
+cannot represent 0.02 exactly, and a rounding error in a tax calculation is a lie
+about someone's profit. Statistical values that are not money (z-scores, RSI,
+volatility) are double precision, which is the right type for them.
+
+### Development
 
 ```bash
-# Backend: postgres in docker, API on the host with reload
 docker compose up -d db
 cd backend && python -m venv .venv && .venv/bin/pip install -r requirements.txt
-FF_DATABASE_URL=postgresql://flipforge:flipforge@localhost:5432/flipforge \
+FF_CONTACT=you@example.com FF_DATABASE_URL=postgresql://flipforge:flipforge@localhost:5432/flipforge \
   .venv/bin/uvicorn app.main:app --reload
 ```
 
-(Uncomment the `ports` block on the `db` service first so the host can reach it.)
+(Uncomment the `ports` block on the `db` service first.)
 
 ```bash
-# Frontend: vite dev server, proxies /api to localhost:8000
 cd frontend && pnpm install && pnpm dev
 ```
 
 ```bash
-# Tests: the money math has full coverage
 cd backend && .venv/bin/python -m pytest tests -q
 ```
+
+The money module has full unit coverage plus property-based tests (hypothesis):
+tax is never negative and never exceeds the cap, breakeven always satisfies
+`net_received >= buy` and is minimal, FIFO matching conserves quantity, the score
+stays inside 0–100 for any input, and the allocator never exceeds the bankroll or
+the slot count.
 
 ### Layout
 
 ```
 backend/app/
-  analytics.py   tax, margins, indicators, scoring   <- the maths, pure and tested
-  ingest.py      pollers, backfill, rollup, alerts
-  wiki.py        upstream client
-  schema.sql     tables and indexes
-  routers/       items, scanner, watchlist, alerts, portfolio, ws
+  money.py       tax, margins, breakeven, buy-limit windows, FIFO   <- the maths
+  scoring.py     the six components, their weights and bands
+  allocator.py   bounded knapsack over GE slots
+  indicators.py  SMA, EMA, RSI, Bollinger, VWAP, volatility
+  policy.py      loads tax rules from config + the exemptions table
+  ingest.py      pollers, backfill, rollup, snapshot and grading jobs
+  wiki.py        upstream v2 client
+  schema.sql     tables, hypertables and migrations
+  routers/       items, scanner, allocator, validation, portfolio, alerts, config, ws
 frontend/src/
   components/    Layout, PriceChart, ItemTable, SearchPalette
-  pages/         Dashboard, Scanner, Item, Watchlist, Portfolio, Alerts
+  pages/         Dashboard, Scanner, Allocator, Item, Watchlist, Portfolio, Alerts, Validation
 ```
 
-The scoring model is deliberately concentrated in one file. If you disagree with
-how it weighs things -- and you might -- `WEIGHTS` and the three saturation bands
-at the top of `analytics.py` are the only numbers you need to touch.
+Full JSON API at **`/api/docs`**, scriptable, CORS-open. The UI is one client,
+not the only one.
 
 ---
 
-## Notes and limits
+## Data quality, stated plainly
 
-- Prices are what the wiki API reports: the most recent instant-buy and
-  instant-sell each item traded at. They are real transactions, not offers, so a
-  thinly traded item's "current price" can be hours old. Every table shows quote
-  age; the scanner filters on it.
-- Occasionally the instant-sell price sits *above* the instant-buy price. That is
-  the real feed, not a bug -- it means the last two trades happened in an odd
-  order. The resulting margin is correctly negative.
-- Candle mode is derived. The exchange publishes an average high and low per
-  interval, not a true open and close, so the previous midpoint opens each bar.
-  The spread view is the honest one.
-- This reports on a market. It does not decide for you, and a high score is not a
-  promise -- an item can be liquid, stable and profitable right up until an update
-  changes what it is worth.
+**Prices are the last real transaction, not a live order book.** A thin item's
+"current price" can be hours old. Quote age is shown on every row and the scanner
+filters on it.
+
+**The instant-sell price sometimes sits above the instant-buy price.** That is
+the genuine feed, not a bug — the last two trades landed in an odd order. The
+margin is correctly negative, the row is flagged as a crossed quote, and nothing
+is clamped to zero to make it look tidy.
+
+**Candles are derived.** The API publishes an average high and low per interval,
+not a true open and close. Candle mode opens each bar at the previous midpoint
+and says so; the two-sided spread view is the honest one and is the default.
+
+**Midpoints require agreement.** A window where only one side traded, or where
+someone paid 11,000gp for a 400gp cape, produces no midpoint rather than a fake
+one. Without this, "biggest mover" lists fill up with mithril daggers at +2,881%.
+
+**Reconstructed score snapshots are approximations.** Rows rebuilt for hours
+predating your install use hourly averages instead of live quotes and cannot
+recover quote freshness at all. They are labelled `reconstructed` everywhere and
+can be filtered out.
+
+**Expected profit assumes both sides fill.** That is the optimistic case. Fill
+time estimates assume you capture about a quarter of one side's flow.
+
+---
+
+## Limits
+
+This reports on a market. It does not decide for you.
+
+A high score is not a promise. It is a statement that an item currently has a
+post-tax edge, trades enough to matter, has held that edge recently, and can
+plausibly be filled inside a four-hour window. Every one of those can stop being
+true between the page loading and your offer filling.
+
+An item can be liquid, stable and profitable right up until a game update changes
+what it is worth. No amount of history predicts a patch note. The Score check
+page tells you how the model has done lately, which is the most honest thing any
+tool of this kind can offer, and it is deliberately capable of telling you the
+model is not working.

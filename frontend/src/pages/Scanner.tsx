@@ -10,7 +10,7 @@ const PRESETS: { name: string; hint: string; filters: ScannerFilters }[] = [
   {
     name: "Balanced",
     hint: "Liquid items with a stable post-tax edge",
-    filters: { min_volume: 1000, min_margin: 1, min_roi: 0.01, min_stability: 0.5, sort: "score" },
+    filters: { min_volume: 1000, min_margin: 1, min_roi: 0.01, max_margin_cv: 1.5, sort: "score" },
   },
   {
     name: "High volume",
@@ -35,8 +35,8 @@ const PRESETS: { name: string; hint: string; filters: ScannerFilters }[] = [
 ];
 
 const COLUMNS: ColumnKey[] = [
-  "score", "buy", "sell", "margin", "roi", "profit",
-  "vol24", "limit", "fill", "stability", "rsi", "change24h", "age",
+  "score", "buy", "sell", "margin", "breakeven", "roi", "profit",
+  "vol24", "limit", "fill", "steadiness", "rsi", "change24h", "age",
 ];
 
 export default function Scanner() {
@@ -84,7 +84,7 @@ export default function Scanner() {
       <div className="topbar" style={{ margin: "-20px -22px 20px", position: "static" }}>
         <h1>Flip scanner</h1>
         <span className="sub">
-          Every tradeable item, ranked. All margins are after the sale tax.
+          Every tradeable item, ranked. Every margin here is after the sale tax.
         </span>
       </div>
 
@@ -131,14 +131,28 @@ export default function Scanner() {
             {numberField("Max price", "max_price", "any")}
             {numberField("Max fill hours", "max_fill_hours", "any", 0.5)}
             <div className="field">
-              <label>Min stability %</label>
+              <label title="Standard deviation of the spread over its own mean. Lower is steadier.">
+                Max margin wobble
+              </label>
+              <input
+                type="number"
+                step={0.25}
+                placeholder="any"
+                value={filters.max_margin_cv ?? ""}
+                onChange={(e) =>
+                  set("max_margin_cv", e.target.value === "" ? undefined : Number(e.target.value))
+                }
+              />
+            </div>
+            <div className="field">
+              <label>Min score</label>
               <input
                 type="number"
                 step={5}
                 placeholder="0"
-                value={filters.min_stability != null ? +(filters.min_stability * 100).toFixed(0) : ""}
+                value={filters.min_score ?? ""}
                 onChange={(e) =>
-                  set("min_stability", e.target.value === "" ? undefined : Number(e.target.value) / 100)
+                  set("min_score", e.target.value === "" ? undefined : Number(e.target.value))
                 }
               />
             </div>
@@ -174,6 +188,16 @@ export default function Scanner() {
                 <option value={900}>15 minutes</option>
                 <option value={3600}>1 hour</option>
                 <option value={86400}>1 day</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>Crossed quotes</label>
+              <select
+                value={filters.hide_crossed ? "hide" : "show"}
+                onChange={(e) => set("hide_crossed", e.target.value === "hide")}
+              >
+                <option value="show">Show</option>
+                <option value="hide">Hide</option>
               </select>
             </div>
             <button

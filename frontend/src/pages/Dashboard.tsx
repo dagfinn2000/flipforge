@@ -51,7 +51,7 @@ export default function Dashboard() {
         <Stat
           label="Items tracked"
           value={s ? num(s.tracked) : "--"}
-          foot={s ? `${num(s.fresh)} quoted in the last 5 min` : undefined}
+          foot={s ? `${num(s.fresh)} quoted in the last 5 min · ${num(s.crossed)} crossed` : undefined}
         />
         <Stat
           label="Profitable after tax"
@@ -66,8 +66,8 @@ export default function Dashboard() {
         />
         <Stat
           label="Sale tax"
-          value={s ? pct(s.tax_config.rate, 0, false) : "--"}
-          foot={s ? `capped at ${gpShort(s.tax_config.cap)} gp per item` : undefined}
+          value={s ? pct(s.tax_policy.rate, 0, false) : "--"}
+          foot={s ? `free under ${s.tax_policy.free_below}gp · capped at ${gpShort(s.tax_policy.cap)}` : undefined}
         />
       </div>
 
@@ -78,7 +78,7 @@ export default function Dashboard() {
         </div>
         <ItemTable
           rows={top.data?.results ?? []}
-          columns={["score", "buy", "sell", "margin", "roi", "profit", "vol24", "limit", "fill"]}
+          columns={["score", "buy", "sell", "margin", "breakeven", "roi", "profit", "vol24", "limit", "fill"]}
           emptyTitle={top.isLoading ? "Loading market data..." : "No profitable flips found"}
           emptyBody="If this persists, price history is probably still building."
         />

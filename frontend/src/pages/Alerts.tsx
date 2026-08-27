@@ -56,6 +56,7 @@ export default function Alerts() {
                     <th>Item</th>
                     <th>Condition</th>
                     <th>Now</th>
+                    <th title="Armed alerts can fire; a fired alert re-arms once the value retreats past its reset band">State</th>
                     <th>Last fired</th>
                     <th />
                   </tr>
@@ -71,9 +72,17 @@ export default function Alerts() {
                       </td>
                       <td className="num">
                         {a.metric} {a.op} {formatValue(a.metric, a.threshold)}
+                        {a.hysteresis ? (
+                          <span style={{ color: "var(--text-faint)" }}>
+                            {" "}±{formatValue(a.metric, a.hysteresis)}
+                          </span>
+                        ) : null}
                       </td>
                       <td className={clsx("num", a.distance != null && (a.op === "above" ? a.distance > 0 : a.distance < 0) && "up")}>
                         {formatValue(a.metric, a.current_value)}
+                      </td>
+                      <td className="num">
+                        <span className={a.armed ? "up" : "flat"}>{a.armed ? "armed" : "cooling"}</span>
                       </td>
                       <td className="num">{a.last_fired ? ago(a.last_fired) : "never"}</td>
                       <td>

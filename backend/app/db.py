@@ -50,9 +50,19 @@ def pool() -> asyncpg.Pool:
 
 
 async def migrate() -> None:
+    """Apply the schema and any migrations.
+
+    Runs on its own connection with no command timeout: rewriting a column type
+    across millions of candle rows, or converting an existing table into a
+    hypertable, takes far longer than a normal query and must not be cut off
+    half way through.
+    """
     sql = SCHEMA_PATH.read_text()
-    async with pool().acquire() as conn:
+    conn = await asyncpg.connect(settings.database_url, command_timeout=None)
+    try:
         await conn.execute(sql)
+    finally:
+        await conn.close()
     log.info("schema applied")
 
 

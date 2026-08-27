@@ -1,22 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from .. import analytics, db, ingest, serial
-from ..wiki import VALID_TIMESTEPS
+from .. import db, indicators, ingest, money, policy, serial
+from ..wiki import TIMESTEPS
 
 router = APIRouter(prefix="/api/items", tags=["items"])
 log = logging.getLogger("flipforge.items")
 
 ITEM_COLUMNS = """i.id, i.name, i.examine, i.members, i.value, i.lowalch, i.highalch,
-                  i.buy_limit, i.icon, i.tax_exempt"""
+                  i.buy_limit, i.icon"""
 
-# Per-item upstream history pulls are cached so a page refresh does not re-fetch.
+# Per-item upstream history pulls are cached so a page refresh does not refetch.
 _series_fetched: dict[tuple[int, str], float] = {}
 _series_lock = asyncio.Lock()
 SERIES_TTL = {"5m": 240, "1h": 1800, "6h": 7200, "24h": 43200}
@@ -30,8 +31,7 @@ async def search(
 ):
     """Fuzzy item search ranked by trigram similarity, then by liquidity."""
     term = q.strip().lower()
-    clauses = []
-    args: list = []
+    clauses, args = [], []
     if term:
         args.append(term)
         clauses.append(f"(lower(i.name) LIKE '%' || ${len(args)} || '%')")
@@ -44,7 +44,7 @@ async def search(
 
     records = await db.fetch(
         f"""SELECT {ITEM_COLUMNS}, m.high, m.low, m.margin, m.roi, m.vol_24h,
-                   m.flip_score, m.price_change_24h
+                   m.flip_score, m.price_change_24h, m.crossed
               FROM items i LEFT JOIN metrics m ON m.item_id = i.id
               {where}
              ORDER BY {order}COALESCE(m.vol_24h, 0) DESC, i.name
@@ -57,10 +57,12 @@ async def search(
 @router.get("/{item_id}")
 async def detail(item_id: int):
     record = await db.fetchrow(
-        f"""SELECT {ITEM_COLUMNS}, m.*, l.high_time, l.low_time, l.fetched_at
+        f"""SELECT {ITEM_COLUMNS}, m.*, l.high_time, l.low_time, l.fetched_at,
+                   (x.item_id IS NOT NULL) AS tax_exempt
               FROM items i
               LEFT JOIN metrics m ON m.item_id = i.id
               LEFT JOIN latest l ON l.item_id = i.id
+              LEFT JOIN tax_exemptions x ON x.item_id = i.id
              WHERE i.id = $1""",
         item_id,
     )
@@ -68,33 +70,39 @@ async def detail(item_id: int):
         raise HTTPException(404, "unknown item")
 
     data = serial.row(record, drop=("item_id",))
-    breakdown = analytics.flip_score(
-        roi_value=record["roi"],
-        margin_value=record["margin"],
-        vol_24h=record["vol_24h"],
-        margin_stability=record["margin_stability"],
-        est_fill_hours=record["est_fill_hours"],
-        data_age_seconds=record["data_age_seconds"],
-        potential_profit=record["potential_profit"],
-    )
-    data["score_breakdown"] = {
-        "roi": breakdown.roi, "profit": breakdown.profit, "volume": breakdown.volume,
-        "stability": breakdown.stability, "fill": breakdown.fill,
-        "freshness": breakdown.freshness, "total": breakdown.total,
-        "notes": breakdown.notes, "weights": analytics.WEIGHTS,
-    }
-    data["watched"] = bool(
-        await db.fetchval("SELECT 1 FROM watchlist WHERE item_id = $1", item_id)
-    )
-    data["tax_config"] = serial.tax_config()
+    tax = policy.current()
 
-    # Buying a full limit costs this much and returns this much post tax.
-    limit = record["buy_limit"] or 0
-    if limit and record["low"] and record["margin"]:
+    # The stored breakdown is what actually produced the ranking, so the page
+    # shows the model's own working rather than a recomputation of it.
+    components = record["score_components"]
+    data["score_breakdown"] = json.loads(components) if isinstance(components, str) else components
+
+    data["watched"] = bool(await db.fetchval("SELECT 1 FROM watchlist WHERE item_id = $1", item_id))
+    data["tax_policy"] = policy.describe()
+
+    # Rolling 4 hour buy limit state, from the trades ledger.
+    purchases = await db.fetch(
+        """SELECT quantity, executed_at FROM trades
+            WHERE item_id = $1 AND side = 'buy'
+              AND executed_at > now() - INTERVAL '4 hours'""",
+        item_id,
+    )
+    window = money.limit_window(
+        record["buy_limit"],
+        [money.Purchase(int(p["quantity"]), int(p["executed_at"].timestamp())) for p in purchases],
+        int(time.time()),
+    )
+    data["limit_window"] = {
+        "limit": window.limit, "used": window.used, "remaining": window.remaining,
+        "resets_at": window.resets_at, "window_hours": window.window_seconds // 3600,
+    }
+
+    if record["low"] and record["margin"] is not None and window.limit:
+        qty = window.remaining if window.remaining is not None else window.limit
         data["limit_cycle"] = {
-            "quantity": limit,
-            "capital": limit * record["low"],
-            "profit": limit * record["margin"],
+            "quantity": qty,
+            "capital": qty * record["low"],
+            "profit": qty * record["margin"],
         }
     return data
 
@@ -106,7 +114,7 @@ async def series(
     limit: int = Query(365, ge=10, le=1000),
 ):
     """Candles plus indicator overlays for the charting view."""
-    if timestep not in VALID_TIMESTEPS:
+    if timestep not in TIMESTEPS:
         raise HTTPException(400, "bad timestep")
     if not await db.fetchval("SELECT 1 FROM items WHERE id = $1", item_id):
         raise HTTPException(404, "unknown item")
@@ -119,39 +127,28 @@ async def series(
         item_id, timestep, limit,
     )
     records = list(reversed(records))
-    exempt = await db.fetchval("SELECT tax_exempt FROM items WHERE id = $1", item_id)
+    tax = policy.current()
 
-    points = []
-    mids: list[float] = []
+    points, mids = [], []
     for r in records:
-        high, low = r["avg_high"], r["avg_low"]
-        mid = None
-        if high and low:
-            mid = (high + low) / 2
-        elif high or low:
-            mid = float(high or low)
+        high = int(r["avg_high"]) if r["avg_high"] is not None else None
+        low = int(r["avg_low"]) if r["avg_low"] is not None else None
+        mid = (high + low) / 2 if (high and low) else float(high or low or 0) or None
         if mid is None:
             continue
         mids.append(mid)
-        points.append(
-            {
-                "t": int(r["ts"].timestamp()),
-                "high": high,
-                "low": low,
-                "mid": mid,
-                "buy_vol": r["high_vol"],
-                "sell_vol": r["low_vol"],
-                "margin": analytics.margin(low, high, exempt) if high and low else None,
-            }
-        )
+        points.append({
+            "t": int(r["ts"].timestamp()), "high": high, "low": low, "mid": mid,
+            "buy_vol": r["high_vol"], "sell_vol": r["low_vol"],
+            "margin": money.margin(low, high, tax, item_id) if (high and low) else None,
+            "crossed": money.is_crossed(low, high),
+        })
 
     volumes = [p["buy_vol"] + p["sell_vol"] for p in points]
-    sma20 = analytics.sma(mids, 20)
-    sma50 = analytics.sma(mids, 50)
-    ema12 = analytics.ema(mids, 12)
-    rsi14 = analytics.rsi(mids, 14)
-    bb_mid, bb_up, bb_low = analytics.bollinger(mids, 20)
-    vwap = analytics.vwap(mids, volumes)
+    sma20, sma50 = indicators.sma(mids, 20), indicators.sma(mids, 50)
+    ema12, rsi14 = indicators.ema(mids, 12), indicators.rsi(mids, 14)
+    _, bb_up, bb_low = indicators.bollinger(mids, 20)
+    vwap = indicators.vwap(mids, volumes)
 
     for i, p in enumerate(points):
         p["sma20"], p["sma50"], p["ema12"] = sma20[i], sma50[i], ema12[i]
@@ -159,23 +156,21 @@ async def series(
         p["bb_upper"], p["bb_lower"] = bb_up[i], bb_low[i]
 
     return {
-        "item_id": item_id,
-        "timestep": timestep,
-        "points": points,
-        "volatility": analytics.volatility(mids),
+        "item_id": item_id, "timestep": timestep, "points": points,
+        "volatility": indicators.volatility(mids),
+        "crossed_count": sum(1 for p in points if p["crossed"]),
     }
 
 
 async def _ensure_series(item_id: int, timestep: str) -> None:
-    """Lazily pull a year of upstream history the first time an item is opened."""
+    """Lazily pull deep history the first time an item is opened."""
     key = (item_id, timestep)
     now = time.monotonic()
     async with _series_lock:
         last = _series_fetched.get(key)
         # `last is None` is the only "never fetched" signal available: monotonic()
         # counts from an arbitrary epoch, so a 0.0 default would read as "fetched
-        # at boot" and suppress the first fetch on any host with less uptime than
-        # the TTL.
+        # at boot" and suppress the first fetch on a freshly booted host.
         if last is not None and now - last < SERIES_TTL[timestep]:
             return
         _series_fetched[key] = now
@@ -194,34 +189,36 @@ async def calculator(
 ):
     """What a flip actually nets after the Grand Exchange takes its cut."""
     record = await db.fetchrow(
-        """SELECT i.tax_exempt, i.buy_limit, m.high, m.low
+        """SELECT i.buy_limit, m.high, m.low
              FROM items i LEFT JOIN metrics m ON m.item_id = i.id WHERE i.id = $1""",
         item_id,
     )
     if record is None:
         raise HTTPException(404, "unknown item")
 
+    tax = policy.current()
     buy_price = buy if buy is not None else record["low"]
     sell_price = sell if sell is not None else record["high"]
     qty = quantity or record["buy_limit"] or 1
     if not buy_price or not sell_price:
         raise HTTPException(400, "no price available; pass buy and sell explicitly")
 
-    unit_tax = analytics.sale_tax(sell_price, record["tax_exempt"])
-    unit_margin = analytics.margin(buy_price, sell_price, record["tax_exempt"])
+    unit_tax = money.sale_tax(sell_price, tax, item_id)
+    unit_margin = money.margin(buy_price, sell_price, tax, item_id)
+    breakeven = money.breakeven_sell(buy_price, tax, item_id)
+    roi = money.roi(buy_price, sell_price, tax, item_id)
     return {
-        "buy": buy_price,
-        "sell": sell_price,
-        "quantity": qty,
-        "unit_tax": unit_tax,
-        "unit_margin": unit_margin,
+        "buy": buy_price, "sell": sell_price, "quantity": qty,
+        "unit_tax": unit_tax, "unit_margin": unit_margin,
         "total_tax": unit_tax * qty,
         "capital_required": buy_price * qty,
-        "gross_revenue": sell_price * qty,
-        "net_revenue": (sell_price - unit_tax) * qty,
-        "profit": unit_margin * qty,
-        "roi": analytics.roi(buy_price, sell_price, record["tax_exempt"]),
+        "net_revenue": money.net_received(sell_price, qty, tax, item_id),
+        "profit": unit_margin * qty if unit_margin is not None else None,
+        "roi": float(roi) if roi is not None else None,
+        "breakeven_sell": breakeven,
+        "breakeven_uplift": (breakeven - buy_price) if breakeven else None,
         "buy_limit": record["buy_limit"],
         "over_limit": bool(record["buy_limit"] and qty > record["buy_limit"]),
-        "tax_config": serial.tax_config(),
+        "crossed": money.is_crossed(buy_price, sell_price),
+        "tax_policy": policy.describe(),
     }

@@ -9,15 +9,20 @@ export interface ItemRow {
   highalch?: number | null;
   high?: number | null;
   low?: number | null;
-  spread?: number | null;
   tax?: number | null;
+  /** Post-tax profit per unit. There is no pre-tax figure anywhere in this app. */
   margin?: number | null;
   roi?: number | null;
+  breakeven_sell?: number | null;
+  /** Instant-sell above instant-buy: a real feed condition, not an error. */
+  crossed?: boolean;
   vol_1h?: number | null;
   vol_24h?: number | null;
   flow_ratio?: number | null;
   avg_margin_24h?: number | null;
-  margin_stability?: number | null;
+  /** Stdev of the post-tax spread over its own mean. Lower is steadier. */
+  margin_cv?: number | null;
+  margin_positive_24h?: number | null;
   price_change_1h?: number | null;
   price_change_24h?: number | null;
   price_change_7d?: number | null;
@@ -36,16 +41,36 @@ export interface ItemRow {
   note?: string | null;
 }
 
+export interface ScoreComponent {
+  key: string;
+  value: number;
+  weight: number;
+  contribution: number;
+  raw: number | null;
+}
+
 export interface ScoreBreakdown {
-  roi: number;
-  profit: number;
-  volume: number;
-  stability: number;
-  fill: number;
-  freshness: number;
   total: number;
+  components: ScoreComponent[];
   notes: string[];
   weights: Record<string, number>;
+}
+
+export interface TaxPolicy {
+  rate: number;
+  cap: number;
+  /** Derived from the rate, never hardcoded: at 2% this is 50gp. */
+  free_below: number;
+  exempt_count: number;
+  note: string;
+}
+
+export interface LimitWindow {
+  limit: number | null;
+  used: number;
+  remaining: number | null;
+  resets_at: number | null;
+  window_hours: number;
 }
 
 export interface ItemDetail extends ItemRow {
@@ -55,15 +80,10 @@ export interface ItemDetail extends ItemRow {
   high_time?: number | null;
   low_time?: number | null;
   watched: boolean;
-  score_breakdown: ScoreBreakdown;
-  tax_config: TaxConfig;
+  score_breakdown: ScoreBreakdown | null;
+  tax_policy: TaxPolicy;
+  limit_window: LimitWindow;
   limit_cycle?: { quantity: number; capital: number; profit: number };
-}
-
-export interface TaxConfig {
-  rate: number;
-  cap: number;
-  min_price: number;
 }
 
 export interface SeriesPoint {
@@ -74,6 +94,7 @@ export interface SeriesPoint {
   buy_vol: number;
   sell_vol: number;
   margin: number | null;
+  crossed: boolean;
   sma20: number | null;
   sma50: number | null;
   ema12: number | null;
@@ -88,19 +109,21 @@ export interface Series {
   timestep: string;
   points: SeriesPoint[];
   volatility: number | null;
+  crossed_count: number;
 }
 
 export interface MarketSummary {
   tracked: number;
   profitable: number;
   fresh: number;
+  crossed: number;
   volume_24h: number;
   median_roi: number;
   updated_at: number | null;
   candles: number;
   backfill_complete: boolean;
   last_poll: number | null;
-  tax_config: TaxConfig;
+  tax_policy: TaxPolicy;
 }
 
 export interface Alert {
@@ -111,6 +134,8 @@ export interface Alert {
   metric: string;
   op: string;
   threshold: number;
+  hysteresis: number;
+  armed: boolean;
   note?: string | null;
   active: boolean;
   cooldown_s: number;
@@ -161,6 +186,7 @@ export interface Position {
   bought_quantity: number;
   sold_quantity: number;
   unmatched_sales: number;
+  breakeven_sell: number | null;
   price_change_24h: number | null;
 }
 
@@ -177,4 +203,88 @@ export interface PortfolioResponse {
     total: number;
     return_pct: number | null;
   };
+}
+
+export interface AllocationRow {
+  item_id: number;
+  name: string;
+  icon_url?: string | null;
+  price: number;
+  margin: number;
+  roi: number;
+  score: number;
+  buy_limit: number | null;
+  volume_24h: number;
+  est_fill_hours: number | null;
+  members: boolean;
+  quantity: number;
+  capital: number;
+  profit: number;
+  pinned: boolean;
+}
+
+export interface AllocatorPlan {
+  allocations: AllocationRow[];
+  bankroll: number;
+  slots: number;
+  slots_used: number;
+  capital_used: number;
+  capital_idle: number;
+  expected_profit: number;
+  expected_return: number | null;
+  notes: string[];
+  candidates_considered: number;
+  pinned: number[];
+  excluded: number[];
+  slot_reference: { members: number; free_to_play: number };
+}
+
+export interface Decile {
+  decile: number;
+  samples: number;
+  score_min: number;
+  score_max: number;
+  score_avg: number;
+  avg_realised_margin: number | null;
+  median_realised_margin: number | null;
+  avg_cycle_profit: number | null;
+  median_cycle_profit: number | null;
+  avg_realised_roi: number | null;
+  win_rate: number | null;
+}
+
+export interface ValidationResponse {
+  horizon: string;
+  days: number;
+  source: string | null;
+  deciles: Decile[];
+  sources: Record<string, number>;
+  verdict: {
+    top_decile_avg_cycle_profit: number | null;
+    bottom_decile_avg_cycle_profit: number | null;
+    lift: number;
+    top_beats_bottom: boolean;
+    top_win_rate: number | null;
+    bottom_win_rate: number | null;
+    best_decile_by_median_profit: number;
+    monotonic_win_rate: boolean;
+  } | null;
+}
+
+export interface ValidationSummary {
+  days: number;
+  horizons: {
+    horizon: string;
+    samples: number;
+    items: number;
+    earliest: number | null;
+    latest: number | null;
+    score_roi_corr: number | null;
+    score_margin_corr: number | null;
+    score_cycle_corr: number | null;
+    avg_realised_roi: number | null;
+  }[];
+  snapshots_total: number;
+  snapshots_awaiting_grade: number;
+  note: string;
 }

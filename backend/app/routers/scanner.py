@@ -4,7 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Query
 
-from .. import db, serial
+from .. import db, policy, serial
 
 router = APIRouter(prefix="/api", tags=["market"])
 
@@ -18,17 +18,23 @@ SORTS = {
     "change_1h": "m.price_change_1h DESC NULLS LAST",
     "change_24h": "m.price_change_24h DESC NULLS LAST",
     "volatility": "m.volatility_24h DESC NULLS LAST",
+    "fill": "m.est_fill_hours ASC NULLS LAST",
     "name": "i.name ASC",
 }
 
+# Note the absence of a raw spread column. Every margin the app reports is
+# post-tax; there is deliberately no pre-tax figure to misread.
 SELECT_ROW = """
-SELECT i.id, i.name, i.icon, i.members, i.buy_limit, i.tax_exempt,
-       i.highalch, m.high, m.low, m.spread, m.tax, m.margin, m.roi,
-       m.vol_1h, m.vol_24h, m.flow_ratio, m.avg_margin_24h, m.margin_stability,
-       m.price_change_1h, m.price_change_24h, m.price_change_7d,
+SELECT i.id, i.name, i.icon, i.members, i.buy_limit, i.highalch,
+       (x.item_id IS NOT NULL) AS tax_exempt,
+       m.high, m.low, m.tax, m.margin, m.roi, m.breakeven_sell, m.crossed,
+       m.vol_1h, m.vol_24h, m.flow_ratio, m.avg_margin_24h, m.margin_cv,
+       m.margin_positive_24h, m.price_change_1h, m.price_change_24h, m.price_change_7d,
        m.volatility_24h, m.zscore_24h, m.vol_zscore, m.rsi_14,
        m.est_fill_hours, m.potential_profit, m.flip_score, m.data_age_seconds
-  FROM metrics m JOIN items i ON i.id = m.item_id
+  FROM metrics m
+  JOIN items i ON i.id = m.item_id
+  LEFT JOIN tax_exemptions x ON x.item_id = m.item_id
 """
 
 
@@ -37,20 +43,24 @@ async def scanner(
     min_margin: int = Query(1),
     min_roi: float = Query(0.0, description="fraction, 0.02 == 2%"),
     min_volume: int = Query(200, description="units traded in the last 24h"),
+    min_score: float = Query(0.0, ge=0, le=100),
     max_price: Optional[int] = None,
     min_price: Optional[int] = None,
+    min_buy_limit: Optional[int] = None,
     max_capital: Optional[int] = Query(None, description="gp available to spend"),
     members: Optional[bool] = None,
     max_age: int = Query(3600, description="max seconds since the quote was seen"),
-    min_stability: float = Query(0.0, ge=0.0, le=1.0),
+    max_margin_cv: Optional[float] = Query(
+        None, description="cap on margin variability; lower is steadier"
+    ),
     max_fill_hours: Optional[float] = None,
+    hide_crossed: bool = Query(False, description="hide items whose quotes are inverted"),
     sort: str = Query("score"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """The flip finder: every tradeable item ranked by a transparent score."""
-    clauses = ["m.margin IS NOT NULL"]
-    args: list = []
+    clauses, args = ["m.margin IS NOT NULL"], []
 
     def add(clause: str, value) -> None:
         args.append(value)
@@ -59,20 +69,24 @@ async def scanner(
     add("m.margin >= ${n}", min_margin)
     add("COALESCE(m.roi, 0) >= ${n}", min_roi)
     add("COALESCE(m.vol_24h, 0) >= ${n}", min_volume)
+    add("COALESCE(m.flip_score, 0) >= ${n}", min_score)
     add("COALESCE(m.data_age_seconds, 999999) <= ${n}", max_age)
-    add("COALESCE(m.margin_stability, 0) >= ${n}", min_stability)
     if max_price is not None:
         add("m.high <= ${n}", max_price)
     if min_price is not None:
         add("m.high >= ${n}", min_price)
+    if min_buy_limit is not None:
+        add("COALESCE(i.buy_limit, 0) >= ${n}", min_buy_limit)
     if members is not None:
         add("i.members = ${n}", members)
     if max_fill_hours is not None:
         add("COALESCE(m.est_fill_hours, 999) <= ${n}", max_fill_hours)
+    if max_margin_cv is not None:
+        add("COALESCE(m.margin_cv, 999) <= ${n}", max_margin_cv)
     if max_capital is not None:
-        # Must be able to afford at least one unit, and the ranking below
-        # reflects what is actually affordable rather than a theoretical limit.
         add("m.low <= ${n}", max_capital)
+    if hide_crossed:
+        clauses.append("NOT m.crossed")
 
     order = SORTS.get(sort, SORTS["score"])
     args.extend([limit, offset])
@@ -104,18 +118,13 @@ async def movers(
     ),
     limit: int = Query(15, ge=1, le=100),
 ):
-    """Biggest percentage price moves over the chosen window.
-
-    Cheap items are excluded by default: a mithril dagger drifting from 1gp to
-    30gp is a genuine +2900% and completely useless as a signal.
-    """
+    """Biggest percentage price moves over the chosen window."""
     column = {"1h": "price_change_1h", "24h": "price_change_24h", "7d": "price_change_7d"}[window]
     order = "DESC" if direction == "up" else "ASC"
     records = await db.fetch(
         f"""{SELECT_ROW}
             WHERE m.{column} IS NOT NULL
-              AND COALESCE(m.vol_24h, 0) >= $1
-              AND COALESCE(m.high, 0) >= $2
+              AND COALESCE(m.vol_24h, 0) >= $1 AND COALESCE(m.high, 0) >= $2
             ORDER BY m.{column} {order} NULLS LAST LIMIT $3""",
         min_volume, min_price, limit,
     )
@@ -125,38 +134,39 @@ async def movers(
 @router.get("/market/unusual")
 async def unusual(
     min_volume: int = Query(500),
+    signal: Optional[str] = Query(None, pattern="^(breakout|volume spike|thin move)$"),
     limit: int = Query(20, ge=1, le=100),
 ):
-    """Items whose price or volume has broken out of its own recent normal.
+    """Items trading outside their own recent normal, split by whether volume agrees.
 
-    A large price z-score with an even larger volume z-score is the signature of
-    a real move; a large price move on flat volume is more often a thin book
-    being pushed around.
+    A price move confirmed by volume is a real repricing. A price move on flat
+    volume is usually one person pushing a shallow book, and conflating the two
+    makes the whole feed useless.
     """
     records = await db.fetch(
         f"""{SELECT_ROW}
             WHERE COALESCE(m.vol_24h, 0) >= $1
               AND (ABS(COALESCE(m.zscore_24h, 0)) >= 2 OR COALESCE(m.vol_zscore, 0) >= 3)
-            -- Cap the price term so one wild reading cannot own the list, and
-            -- weight volume confirmation above raw price movement.
             ORDER BY (LEAST(ABS(COALESCE(m.zscore_24h, 0)), 6)
                       + 1.5 * LEAST(GREATEST(COALESCE(m.vol_zscore, 0), 0), 6)) DESC
             LIMIT $2""",
-        min_volume, limit,
+        min_volume, limit * 3 if signal else limit,
     )
-    out = serial.rows(records)
-    for r in out:
+    out = []
+    for r in serial.rows(records):
         pz, vz = r.get("zscore_24h") or 0, r.get("vol_zscore") or 0
         if abs(pz) >= 2 and vz >= 2:
             r["signal"] = "breakout"
-            r["signal_note"] = "price and volume both broke their 24h normal"
+            r["signal_note"] = "price and volume both broke their recent normal"
         elif vz >= 3:
             r["signal"] = "volume spike"
             r["signal_note"] = "unusual trading interest, price has not moved much yet"
         else:
             r["signal"] = "thin move"
             r["signal_note"] = "price moved without matching volume - treat with care"
-    return {"results": out}
+        if signal is None or r["signal"] == signal:
+            out.append(r)
+    return {"results": out[:limit]}
 
 
 @router.get("/market/summary")
@@ -165,21 +175,18 @@ async def summary():
         """SELECT count(*) AS tracked,
                   count(*) FILTER (WHERE margin > 0) AS profitable,
                   count(*) FILTER (WHERE data_age_seconds <= 300) AS fresh,
+                  count(*) FILTER (WHERE crossed) AS crossed,
                   COALESCE(SUM(vol_24h), 0) AS volume_24h,
-                  -- A mean ROI is dominated by a handful of 200% outliers on
-                  -- near-worthless items; the median describes the market.
                   COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY roi)
                            FILTER (WHERE margin > 0), 0) AS median_roi,
                   max(updated_at) AS updated_at
              FROM metrics"""
     )
-    candles = await db.fetchval("SELECT count(*) FROM candles")
-    backfilled = await db.get_meta("backfill_done") == "1"
     last_poll = await db.get_meta("last_latest_poll")
     return {
         **serial.row(row),
-        "candles": candles,
-        "backfill_complete": backfilled,
+        "candles": await db.fetchval("SELECT count(*) FROM candles"),
+        "backfill_complete": await db.get_meta("backfill_done") == "1",
         "last_poll": int(last_poll) if last_poll else None,
-        "tax_config": serial.tax_config(),
+        "tax_policy": policy.describe(),
     }

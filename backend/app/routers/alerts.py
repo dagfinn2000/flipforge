@@ -32,9 +32,10 @@ async def create(body: AlertIn):
     if not await db.fetchval("SELECT 1 FROM items WHERE id = $1", body.item_id):
         raise HTTPException(404, "unknown item")
     alert_id = await db.fetchval(
-        """INSERT INTO alerts (item_id, metric, op, threshold, note, cooldown_s)
-           VALUES ($1,$2,$3,$4,$5,$6) RETURNING id""",
-        body.item_id, body.metric, body.op, body.threshold, body.note, body.cooldown_s,
+        """INSERT INTO alerts (item_id, metric, op, threshold, hysteresis, note, cooldown_s)
+           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id""",
+        body.item_id, body.metric, body.op, body.threshold,
+        body.hysteresis, body.note, body.cooldown_s,
     )
     return {"ok": True, "id": alert_id}
 

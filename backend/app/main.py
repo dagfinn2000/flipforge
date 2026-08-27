@@ -3,16 +3,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import sys
 import time
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 
-from . import db, ingest, serial
+from . import db, ingest, policy
 from .config import settings
 from .hub import hub
-from .routers import alerts, items, portfolio, scanner, watchlist, ws
+from .routers import alerts, allocator, items, portfolio, scanner, validation, watchlist, ws
+from .routers import config as config_router
 from .wiki import client
 
 logging.basicConfig(
@@ -27,13 +29,22 @@ _tasks: list[asyncio.Task] = []
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Fail loudly and immediately rather than emitting a wall of rejected
+    # requests that looks like a network fault.
+    try:
+        settings.require_contact()
+    except RuntimeError as exc:
+        log.error("%s", exc)
+        sys.exit(1)
+
     await db.connect()
     await db.migrate()
-    if settings.contact.startswith("unset"):
-        log.warning(
-            "FF_CONTACT is not set. The OSRS Wiki asks API users to identify "
-            "themselves; set it in .env before running this for any length of time."
-        )
+    try:
+        await client.probe()
+    except Exception as exc:  # noqa: BLE001
+        log.error("upstream check failed: %s", exc)
+        sys.exit(1)
+
     await ingest.start_background(_tasks)
     log.info("flipforge ready")
     try:
@@ -49,7 +60,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="FlipForge",
     version=settings.app_version,
-    description="Self-hosted real-time Old School RuneScape market intelligence.",
+    description=(
+        "Self-hosted real-time Old School RuneScape market intelligence. "
+        "Every margin reported by this API is net of Grand Exchange tax."
+    ),
     default_response_class=ORJSONResponse,
     lifespan=lifespan,
     # Served under /api so the web container's proxy rule reaches them.
@@ -60,38 +74,25 @@ app = FastAPI(
 
 # The API is meant to be usable from your own scripts and dashboards too.
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
 
-for module in (items, scanner, watchlist, alerts, portfolio, ws):
+for module in (items, scanner, watchlist, alerts, portfolio, allocator, validation, config_router, ws):
     app.include_router(module.router)
 
 
-@app.get("/api/health")
+@app.get("/api/health", tags=["system"])
 async def health():
-    items_count = await db.fetchval("SELECT count(*) FROM items")
+    now = int(time.time())
     last_poll = await db.get_meta("last_latest_poll")
     last_metrics = await db.get_meta("last_metrics_run")
-    now = int(time.time())
     return {
         "status": "ok",
         "uptime_seconds": int(time.time() - STARTED),
-        "items": items_count,
+        "items": await db.fetchval("SELECT count(*) FROM items"),
         "ws_clients": hub.size,
         "seconds_since_price_poll": now - int(last_poll) if last_poll else None,
         "seconds_since_metrics": now - int(last_metrics) if last_metrics else None,
         "backfill_complete": await db.get_meta("backfill_done") == "1",
-    }
-
-
-@app.get("/api/config")
-async def config():
-    return {
-        "version": settings.app_version,
-        "tax": serial.tax_config(),
-        "poll_seconds": settings.poll_latest_seconds,
-        "source": settings.wiki_base,
+        "tax_policy": policy.describe(),
     }

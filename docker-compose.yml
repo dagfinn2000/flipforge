@@ -2,8 +2,14 @@ name: flipforge
 
 services:
   db:
-    image: postgres:16-alpine
+    # TimescaleDB is PostgreSQL 16 plus the time-series extension, which the
+    # candle and score-snapshot tables use as hypertables.
+    image: timescale/timescaledb:2.17.2-pg16
     restart: unless-stopped
+    # The image only writes shared_preload_libraries during first-time
+    # initialisation, so a data directory created by plain postgres would load
+    # the image but not the extension. Setting it here works either way.
+    command: postgres -c shared_preload_libraries=timescaledb
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-flipforge}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flipforge}
@@ -28,16 +34,20 @@ services:
         condition: service_healthy
     environment:
       FF_DATABASE_URL: postgresql://${POSTGRES_USER:-flipforge}:${POSTGRES_PASSWORD:-flipforge}@db:5432/${POSTGRES_DB:-flipforge}
-      # Identify yourself to the OSRS Wiki API. Set FF_CONTACT in .env.
-      FF_CONTACT: ${FF_CONTACT:-unset}
+      # Required. The wiki rejects requests without a descriptive User-Agent,
+      # and the API refuses to boot without one rather than failing obscurely.
+      FF_CONTACT: ${FF_CONTACT:?set FF_CONTACT in .env to your email or Discord handle}
       FF_POLL_LATEST_SECONDS: ${FF_POLL_LATEST_SECONDS:-45}
       FF_METRICS_INTERVAL_SECONDS: ${FF_METRICS_INTERVAL_SECONDS:-60}
+      FF_SNAPSHOT_INTERVAL_SECONDS: ${FF_SNAPSHOT_INTERVAL_SECONDS:-3600}
       FF_BACKFILL_ON_START: ${FF_BACKFILL_ON_START:-true}
       FF_BACKFILL_1H_STEPS: ${FF_BACKFILL_1H_STEPS:-336}
       FF_BACKFILL_5M_STEPS: ${FF_BACKFILL_5M_STEPS:-288}
       FF_GE_TAX_RATE: ${FF_GE_TAX_RATE:-0.02}
       FF_GE_TAX_CAP: ${FF_GE_TAX_CAP:-5000000}
-      FF_GE_TAX_MIN_PRICE: ${FF_GE_TAX_MIN_PRICE:-100}
+      FF_GE_SLOTS_MEMBERS: ${FF_GE_SLOTS_MEMBERS:-8}
+      FF_GE_SLOTS_F2P: ${FF_GE_SLOTS_F2P:-3}
+      FF_ALLOCATOR_MAX_SHARE: ${FF_ALLOCATOR_MAX_SHARE:-0.35}
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=5).status==200 else 1)\""]
       interval: 15s

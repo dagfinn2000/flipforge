@@ -1,22 +1,24 @@
+from decimal import Decimal
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Runtime configuration. Every field can be overridden by an env var of the same name."""
+    """Runtime configuration. Every field is overridable by an FF_-prefixed env var."""
 
     model_config = SettingsConfigDict(env_prefix="FF_", env_file=".env", extra="ignore")
 
     database_url: str = "postgresql://flipforge:flipforge@db:5432/flipforge"
 
     # --- Upstream data source -------------------------------------------------
-    wiki_base: str = "https://prices.runescape.wiki/api/v1/osrs"
-    # The OSRS Wiki asks every client to identify itself and leave a contact.
-    # Set FF_CONTACT to your email or Discord handle -- it is the polite thing to
-    # do and it is what keeps the API open for everyone.
-    contact: str = "unset - please set FF_CONTACT"
-    app_version: str = "1.0.0"
+    wiki_base: str = "https://prices.runescape.wiki/api/v2/osrs"
+    # The wiki blocks default agents outright (python-requests, curl/*, Java/*,
+    # and friends get a 400 with a pointer to the docs). A descriptive
+    # User-Agent with a contact is the entire price of admission, so a missing
+    # contact is a hard boot failure rather than a warning nobody reads.
+    contact: str = ""
+    app_version: str = "1.0"
 
     # --- Poll cadence (seconds) ----------------------------------------------
     poll_latest_seconds: int = 45
@@ -24,29 +26,55 @@ class Settings(BaseSettings):
     poll_1h_seconds: int = 900
     poll_mapping_seconds: int = 86400
     metrics_interval_seconds: int = 60
+    snapshot_interval_seconds: int = 3600     # score validation snapshots
+    # Hours of history to rebuild snapshots for on first boot, so the score
+    # validation page has data before the app has been running for a day.
+    reconstruct_snapshots_hours: int = 96
+    outcome_interval_seconds: int = 1800      # grade matured snapshots
 
     # --- Startup backfill -----------------------------------------------------
-    # Bulk endpoints return every item for one timestamp, so history is built by
-    # walking timestamps backwards rather than by crawling items one by one.
-    backfill_1h_steps: int = 336   # 14 days of hourly candles
-    backfill_5m_steps: int = 288   # 24 hours of 5-minute candles
+    # One /1h?timestamp= request covers every item for one hour, so history is
+    # built by walking timestamps backwards rather than crawling items.
+    backfill_1h_steps: int = 336   # 14 days
+    backfill_5m_steps: int = 288   # 24 hours
     backfill_rate_per_sec: float = 5.0
     backfill_on_start: bool = True
 
     # --- Grand Exchange tax ---------------------------------------------------
-    # Jagex has tuned these numbers since the tax launched in Dec 2021, so they
-    # are configuration rather than constants. Verify against the current
-    # in-game rules if a patch lands.
-    ge_tax_rate: float = 0.02
+    # 2% since 29 May 2025 (1% before that), floored per item, capped per item.
+    # There is deliberately no minimum-price setting: the threshold below which
+    # tax rounds to nothing is derived from the rate itself.
+    ge_tax_rate: Decimal = Decimal("0.02")
     ge_tax_cap: int = 5_000_000
-    ge_tax_min_price: int = 100
+    seed_tax_exemptions: bool = True
+
+    # --- Slot allocator -------------------------------------------------------
+    ge_slots_members: int = 8
+    ge_slots_f2p: int = 3
+    allocator_max_share: float = 0.35   # no single item over this share of bankroll
 
     # --- Scanner defaults -----------------------------------------------------
     scanner_max_data_age_seconds: int = 3600
 
     @property
     def user_agent(self) -> str:
-        return f"FlipForge/{self.app_version} (self-hosted market tracker; contact: {self.contact})"
+        return f"flipforge/{self.app_version} - {self.contact}"
+
+    def require_contact(self) -> None:
+        """Refuse to boot without a contact string.
+
+        Booting without one produces a wall of 400s from upstream that looks
+        like a network fault, so failing loudly here saves the confusion.
+        """
+        if not self.contact.strip() or self.contact.strip().lower() in {"unset", "changeme"}:
+            raise RuntimeError(
+                "FF_CONTACT is not set.\n"
+                "The OSRS Wiki prices API requires a descriptive User-Agent with a way "
+                "to reach you, and rejects requests without one.\n"
+                "Set FF_CONTACT in your .env to an email address or Discord handle, "
+                "for example:\n"
+                "    FF_CONTACT=you@example.com\n"
+            )
 
 
 @lru_cache

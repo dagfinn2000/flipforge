@@ -209,6 +209,7 @@ td.num { font-family: var(--mono); }
 .tag.breakout { color: var(--up); border-color: rgba(78, 201, 160, 0.4); }
 .tag.thin { color: var(--warn); border-color: rgba(227, 179, 65, 0.4); }
 .tag.exempt { color: var(--info); border-color: rgba(106, 166, 248, 0.4); }
+.tag.crossed { color: var(--warn); border-color: rgba(227, 179, 65, 0.45); margin-left: 6px; }
 
 /* ---------------------------------------------------------------- controls -- */
 .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
@@ -348,3 +349,11 @@ kbd {
 .spread-bar .sell-side { background: var(--down); }
 
 .inline-form { display: flex; flex-wrap: wrap; gap: 9px; align-items: flex-end; }
+
+/* -------------------------------------------------------- validation bars -- */
+.dbar {
+  display: block; height: 9px; background: var(--bg-inset);
+  border-radius: 3px; overflow: hidden; position: relative;
+}
+.dbar-pos { display: block; height: 100%; background: var(--up); opacity: 0.75; }
+.dbar-neg { display: block; height: 100%; background: var(--down); opacity: 0.75; }

@@ -11,9 +11,11 @@ import SearchPalette from "./SearchPalette";
 const NAV = [
   { to: "/", label: "Dashboard", icon: "◫", end: true },
   { to: "/scanner", label: "Flip scanner", icon: "◳" },
+  { to: "/allocator", label: "Slot allocator", icon: "▦" },
   { to: "/watchlist", label: "Watchlist", icon: "★" },
   { to: "/portfolio", label: "Portfolio", icon: "◑" },
   { to: "/alerts", label: "Alerts", icon: "◉" },
+  { to: "/validation", label: "Score check", icon: "◈" },
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {
@@ -86,6 +88,16 @@ export default function Layout({ children }: { children: ReactNode }) {
           <div className="status" style={{ marginTop: 4 }}>
             tick {lastTick ? ago(Math.floor(lastTick / 1000)) : ago(summary?.last_poll)}
           </div>
+          {summary && (
+            <div
+              className="status"
+              style={{ marginTop: 4 }}
+              title={summary.tax_policy.note}
+            >
+              tax {(summary.tax_policy.rate * 100).toFixed(0)}% · free under{" "}
+              {summary.tax_policy.free_below}gp
+            </div>
+          )}
         </div>
       </aside>
 

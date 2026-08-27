@@ -156,7 +156,9 @@ export default function Portfolio() {
             <table>
               <thead>
                 <tr>
-                  <th>Item</th><th>Open</th><th>Avg cost</th><th>Now</th>
+                  <th>Item</th><th>Open</th><th>Avg cost</th>
+                  <th title="Lowest sell price that covers your average cost after tax">Breakeven</th>
+                  <th>Now</th>
                   <th>Realised</th><th>Unrealised</th><th>Total</th><th>Tax</th>
                 </tr>
               </thead>
@@ -176,6 +178,9 @@ export default function Portfolio() {
                     </td>
                     <td className="num">{num(p.open_quantity)}</td>
                     <td className="num">{gp(p.avg_cost)}</td>
+                    <td className={clsx("num", p.breakeven_sell && p.high && p.high >= p.breakeven_sell ? "up" : "down")}>
+                      {gp(p.breakeven_sell)}
+                    </td>
                     <td className="num">{gp(p.high)}</td>
                     <td className={clsx("num", tone(p.realised))}>{gp(p.realised, { sign: true })}</td>
                     <td className={clsx("num", tone(p.unrealised))}>{gp(p.unrealised, { sign: true })}</td>
